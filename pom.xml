@@ -35,6 +35,12 @@
       <version>${log4j.version}</version>
       <scope>runtime</scope>
     </dependency>
+    <!-- JSON is used only for catalogs; column data uses our own binary codec. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.18.3</version>
+    </dependency>
     <!-- Testing -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -58,6 +64,19 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.6</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.6</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
       <!-- Lets `mvn exec:java` start the engine -->
       <plugin>
