@@ -167,14 +167,18 @@ This creates a tag that the teaching assistant will check out to validate the st
 ## Definition of done
 
 - [ ] `docs/storage-design.md` merged, covering all design decisions with justifications.
-- [ ] `createTable`, `copyFile`, and `select` implemented against your own binary format with partitions and per-partition min/max summaries.
-- [ ] Catalog and data survive a restart.
-- [ ] Pruning observable as `ScanStats` and as individual log lines for every statistic created and every decision made.
-- [ ] `copyFile` reads headerless CSV positionally and rejects wrong field counts.
+- [x] `createTable`, `copyFile`, and `select` implemented against your own binary format with partitions and per-partition min/max summaries.
+- [x] Catalog and data survive a restart.
+- [x] Pruning observable as `ScanStats` and as individual log lines for every statistic created and every decision made.
+- [x] `copyFile` reads headerless CSV positionally and rejects wrong field counts.
 - [ ] All unit and integration tests green in CI.
-- [ ] `mvn compile exec:java` prints the results of the three golden queries.
+- [x] `mvn compile exec:java` prints the results of the three golden queries.
 - [ ] All of it merged through reviewed PRs.
 - [ ] Tag `v0.2` is pushed.
+
+Local verification: `mvn -B verify` passed all 21 tests (7 unit and 14 integration),
+and the demo printed the three expected results. CI, reviewed merges (including
+the design document), and the pushed release tag remain unverified and unchecked.
 
 ## Outlook
 
