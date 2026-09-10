@@ -185,6 +185,11 @@ public final class StorageEngine {
         return table;
     }
 
+    /** Returns the table schema in column order. */
+    public synchronized List<ColumnSpec> schema(String tableName) {
+        return List.copyOf(table(tableName).columns());
+    }
+
     private static long startCall() {
         if (MDC.get("sessionId") == null) MDC.put("sessionId", UUID.randomUUID().toString());
         if (MDC.get("statementNumber") == null) MDC.put("statementNumber", "0");
