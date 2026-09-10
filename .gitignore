@@ -13,3 +13,5 @@ logs/
 # Generated storage (put persistent dataDirectory instances under data/).
 data/
 catalog/
+
+.factorypath
