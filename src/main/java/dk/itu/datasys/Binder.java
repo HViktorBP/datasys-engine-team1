@@ -1,17 +1,22 @@
 package dk.itu.datasys;
 
 import java.util.HashSet;
-import java.util.Objects;
 
 public final class Binder {
     private final StorageEngine engine;
 
     public Binder(StorageEngine engine) {
-        this.engine = Objects.requireNonNull(engine, "engine");
+        if (engine == null) {
+            throw new IllegalArgumentException("engine is required");
+        }
+        this.engine = engine;
     }
 
     /** Validates a statement against the catalog. */
     public void bind(Statement statement) {
+        if (statement == null) {
+            throw new IllegalArgumentException("statement is required");
+        }
         switch (statement) {
             case CreateTableStatement create -> bindCreate(create);
             case CopyStatement copy -> engine.schema(copy.tableName());

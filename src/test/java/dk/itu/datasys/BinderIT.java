@@ -49,6 +49,11 @@ class BinderIT {
                         new Predicate("distance", Comparison.EQUALS, "x")))));
     }
 
+    @Test void rejectsNullPublicApiInputs() {
+        assertThrows(IllegalArgumentException.class, () -> new Binder(null));
+        assertThrows(IllegalArgumentException.class, () -> binder.bind(null));
+    }
+
     @Test void validatesCreateColumnsButDefersExistingTableChecks() {
         assertThrows(IllegalArgumentException.class,
                 () -> binder.bind(new CreateTableStatement("empty", List.of())));
