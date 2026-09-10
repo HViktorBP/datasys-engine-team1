@@ -15,6 +15,9 @@ public final class SqlPrinter {
 
     /** Renders a statement as SQL that parses back to an equal statement. */
     public String print(Statement statement) {
+        if (statement == null) {
+            throw new IllegalArgumentException("Statement cannot be null");
+        }
         return switch (statement) {
             case CreateTableStatement create -> printCreate(create);
             case CopyStatement copy -> "COPY " + tableName(copy.tableName()) + " FROM "
@@ -66,6 +69,9 @@ public final class SqlPrinter {
     }
 
     private static String constant(Object value) {
+        if (value == null) {
+            throw new IllegalArgumentException("SQL literal value cannot be null");
+        }
         return switch (value) {
             case String string -> quote(string);
             case Long number -> number.toString();
@@ -86,6 +92,9 @@ public final class SqlPrinter {
     }
 
     private static String quote(String value) {
+        if (value == null) {
+            throw new IllegalArgumentException("String cannot be null");
+        }
         ColumnType.requireAscii(value);
         if (value.indexOf('\'') >= 0 || value.indexOf('\r') >= 0
                 || value.indexOf('\n') >= 0) {

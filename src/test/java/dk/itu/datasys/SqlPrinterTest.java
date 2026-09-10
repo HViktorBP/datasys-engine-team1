@@ -76,6 +76,21 @@ class SqlPrinterTest {
                         new Predicate("price", Comparison.EQUALS, Double.NaN)))));
     }
 
+    @Test void rejectsNullStatement() {
+        assertThrows(IllegalArgumentException.class, () -> printer.print(null));
+    }
+
+    @Test void rejectsNullCopyPath() {
+        assertThrows(IllegalArgumentException.class,
+                () -> printer.print(new CopyStatement("trips", null)));
+    }
+
+    @Test void rejectsNullPredicateConstant() {
+        assertThrows(IllegalArgumentException.class,
+                () -> printer.print(new SelectStatement("trips", Optional.of(
+                        new Predicate("city", Comparison.EQUALS, null)))));
+    }
+
     @Test void rejectsMalformedTableNamesInEveryStatementShape() {
         assertAll(
                 () -> assertThrows(IllegalArgumentException.class,
