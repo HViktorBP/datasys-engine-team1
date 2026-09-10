@@ -75,4 +75,42 @@ class SqlPrinterTest {
                 () -> printer.print(new SelectStatement("trips", Optional.of(
                         new Predicate("price", Comparison.EQUALS, Double.NaN)))));
     }
+
+    @Test void rejectsMalformedTableNamesInEveryStatementShape() {
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CreateTableStatement("123trips",
+                                List.of(new ColumnSpec("city", ColumnType.STRING))))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CopyStatement("bad-name", "trips.csv"))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new SelectStatement("has space", Optional.empty()))));
+    }
+
+    @Test void rejectsReservedTableNamesCaseInsensitively() {
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CreateTableStatement("select",
+                                List.of(new ColumnSpec("city", ColumnType.STRING))))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CopyStatement("FROM", "trips.csv"))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new SelectStatement("String", Optional.empty()))));
+    }
+
+    @Test void rejectsInvalidAndReservedColumnNames() {
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CreateTableStatement("trips",
+                                List.of(new ColumnSpec("bad-name", ColumnType.STRING))))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new CreateTableStatement("trips",
+                                List.of(new ColumnSpec("WHERE", ColumnType.STRING))))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new SelectStatement("trips", Optional.of(
+                                new Predicate("123city", Comparison.EQUALS, "Odense"))))),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> printer.print(new SelectStatement("trips", Optional.of(
+                                new Predicate("double", Comparison.EQUALS, 1.0))))));
+    }
 }

@@ -1,14 +1,23 @@
 package dk.itu.datasys;
 
 import java.math.BigDecimal;
+import java.util.Locale;
+import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public final class SqlPrinter {
+    private static final Pattern IDENTIFIER =
+            Pattern.compile("[A-Za-z_][A-Za-z_0-9]*");
+    private static final Set<String> KEYWORDS = Set.of(
+            "CREATE", "TABLE", "COPY", "FROM", "SELECT", "WHERE",
+            "STRING", "LONG", "DOUBLE");
+
     /** Renders a statement as SQL that parses back to an equal statement. */
     public String print(Statement statement) {
         return switch (statement) {
             case CreateTableStatement create -> printCreate(create);
-            case CopyStatement copy -> "COPY " + copy.tableName() + " FROM "
+            case CopyStatement copy -> "COPY " + tableName(copy.tableName()) + " FROM "
                     + quote(copy.csvFilePath()) + ";";
             case SelectStatement select -> printSelect(select);
         };
@@ -16,18 +25,36 @@ public final class SqlPrinter {
 
     private static String printCreate(CreateTableStatement statement) {
         String columns = statement.columns().stream()
-                .map(column -> column.name() + " " + column.type().name())
+                .map(column -> columnName(column.name()) + " " + column.type().name())
                 .collect(Collectors.joining(", "));
-        return "CREATE TABLE " + statement.tableName() + " (" + columns + ");";
+        return "CREATE TABLE " + tableName(statement.tableName())
+                + " (" + columns + ");";
     }
 
     private static String printSelect(SelectStatement statement) {
         String where = statement.where()
-                .map(predicate -> " WHERE " + predicate.columnName() + " "
+                .map(predicate -> " WHERE " + columnName(predicate.columnName()) + " "
                         + operator(predicate.comparison()) + " "
                         + constant(predicate.constant()))
                 .orElse("");
-        return "SELECT * FROM " + statement.tableName() + where + ";";
+        return "SELECT * FROM " + tableName(statement.tableName()) + where + ";";
+    }
+
+    private static String tableName(String value) {
+        return identifier("Table", value);
+    }
+
+    private static String columnName(String value) {
+        return identifier("Column", value);
+    }
+
+    private static String identifier(String kind, String value) {
+        if (value == null || !IDENTIFIER.matcher(value).matches()
+                || KEYWORDS.contains(value.toUpperCase(Locale.ROOT))) {
+            throw new IllegalArgumentException(
+                    kind + " name cannot be represented by this SQL subset: " + value);
+        }
+        return value;
     }
 
     private static String operator(Comparison comparison) {

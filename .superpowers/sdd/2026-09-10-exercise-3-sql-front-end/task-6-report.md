@@ -47,3 +47,48 @@
 - Implementation complete.
 - No code/test blockers found.
 - Todo update attempted after completion; see final status response for result.
+
+## Fix Round 1
+
+## Findings addressed
+- Addressed critical identifier printing issue by validating every printed table and column identifier before emission.
+- Validation rejects null, malformed, and reserved names. Accepted shape is `[A-Za-z_][A-Za-z_0-9]*`.
+- Reserved words are rejected case-insensitively: CREATE, TABLE, COPY, FROM, SELECT, WHERE, STRING, LONG, DOUBLE.
+- Applied validation to CREATE table names and column definitions, COPY table names, SELECT table names, and SELECT predicate column names.
+
+## Test file
+- `src/test/java/dk/itu/datasys/SqlPrinterTest.java`
+- Added focused rejection coverage for malformed table names, case-insensitive reserved table names, and invalid/reserved column names across CREATE, COPY, and SELECT shapes.
+
+## RED evidence
+- Command: `cd /Users/duckth/projects/school/datasys/datasys-engine-team1/.worktrees/parsing-sql-impl && mvn -B -Dtest=SqlPrinterTest test`
+- Result: failed as expected because the printer still emitted raw identifiers.
+- Evidence: `SqlPrinterTest.rejectsMalformedTableNamesInEveryStatementShape`, `rejectsReservedTableNamesCaseInsensitively`, and `rejectsInvalidAndReservedColumnNames` failed with assertions such as `Expected java.lang.IllegalArgumentException to be thrown, but nothing was thrown.`
+- Summary: `Tests run: 7, Failures: 3, Errors: 0, Skipped: 0`.
+
+## GREEN evidence
+- Command: `cd /Users/duckth/projects/school/datasys/datasys-engine-team1/.worktrees/parsing-sql-impl && mvn -B -Dtest=SqlParserTest,SqlPrinterTest test`
+- Result: passed.
+- Summary: `Tests run: 13, Failures: 0, Errors: 0, Skipped: 0`.
+- `SqlPrinterTest`: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0`.
+- `SqlParserTest`: `Tests run: 6, Failures: 0, Errors: 0, Skipped: 0`.
+
+## Final suite
+- Command: `cd /Users/duckth/projects/school/datasys/datasys-engine-team1/.worktrees/parsing-sql-impl && mvn -B verify`
+- Result: completed with exit code 0.
+- Surefire report evidence:
+  - `SqlPrinterTest`: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0`
+  - `SqlParserTest`: `Tests run: 6, Failures: 0, Errors: 0, Skipped: 0`
+  - Other surefire/failsafe reports also show zero failures/errors.
+
+## Commit
+- Subject: `fix: reject invalid SQL identifiers (#4)`
+- Trailer: `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`
+
+## Todo
+- Attempted todo update for `print-sql-statements`; session todo is now `done`.
+
+## Self-review
+- Confirmed no raw table or column identifier concatenation remains in `SqlPrinter`; all paths call `tableName(...)` or `columnName(...)` before printing.
+- Confirmed validation uses the grammar-compatible identifier regex and `Locale.ROOT` for case-insensitive keyword rejection.
+- Confirmed change is limited to printer behavior, printer tests, and this task report.
