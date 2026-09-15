@@ -13,7 +13,17 @@ import java.util.Locale;
 import java.util.Optional;
 import org.antlr.v4.runtime.Token;
 
+/** Converts ANTLR parse trees into the engine's immutable SQL statement model. */
 final class SqlAstBuilder extends SqlBaseVisitor<Object> {
+    /** Creates an abstract syntax tree builder. */
+    SqlAstBuilder() { }
+
+    /**
+     * Builds the statements contained in a complete parsed script.
+     *
+     * @param context the root parse-tree context
+     * @return the statements in source order
+     */
     List<Statement> build(ScriptContext context) {
         return context.statement().stream()
                 .map(this::visit)
@@ -21,6 +31,7 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
                 .toList();
     }
 
+    /** {@inheritDoc} */
     @Override public Object visitCreateTable(CreateTableContext context) {
         var columns = context.columnDef().stream()
                 .map(this::visit)
@@ -29,17 +40,20 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
         return new CreateTableStatement(context.IDENTIFIER().getText(), columns);
     }
 
+    /** {@inheritDoc} */
     @Override public Object visitColumnDef(ColumnDefContext context) {
         var type = ColumnType.valueOf(
                 context.columnType().getText().toUpperCase(Locale.ROOT));
         return new ColumnSpec(context.IDENTIFIER().getText(), type);
     }
 
+    /** {@inheritDoc} */
     @Override public Object visitCopy(CopyContext context) {
         return new CopyStatement(context.IDENTIFIER().getText(),
                 unquote(context.STRING_LITERAL().getText()));
     }
 
+    /** {@inheritDoc} */
     @Override public Object visitSelect(SelectContext context) {
         var where = context.predicate() == null
                 ? Optional.<Predicate>empty()
@@ -47,6 +61,7 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
         return new SelectStatement(context.IDENTIFIER().getText(), where);
     }
 
+    /** {@inheritDoc} */
     @Override public Object visitPredicate(PredicateContext context) {
         var comparison = switch (context.comparison.getText()) {
             case "=" -> Comparison.EQUALS;
@@ -59,6 +74,13 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
                 visit(context.literal()));
     }
 
+    /**
+     * Converts a string, integer, or floating-point literal to its Java representation.
+     *
+     * @param context the literal parse-tree context
+     * @return a {@link String}, {@link Long}, or {@link Double} value
+     * @throws SqlParseException if a numeric literal is outside its supported range
+     */
     @Override public Object visitLiteral(LiteralContext context) {
         Token token = context.getStart();
         try {
@@ -75,6 +97,12 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
         }
     }
 
+    /**
+     * Removes the surrounding quotes from a grammar-validated string literal.
+     *
+     * @param text the quoted literal text
+     * @return the unquoted contents
+     */
     private static String unquote(String text) {
         return text.substring(1, text.length() - 1);
     }
