@@ -6,6 +6,7 @@ logs/
 .project
 .settings/
 .DS_Store
+.worktrees/
 *.class
 *.jar
 !pom.xml

@@ -1,6 +1,7 @@
 package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.*;
+
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -12,19 +13,21 @@ class EngineTest {
         assertEquals("Team 1", new Engine().teamName());
     }
     @Test
-    void demoPrintsGoldenResultsOnRepeatedRuns() throws Exception {
+    void demoParsesAndPrintsExerciseStatementsOnRepeatedRuns() {
+        String expected = """
+                CREATE TABLE trips (city STRING, distance LONG, price DOUBLE);
+                COPY trips FROM 'trips.csv';
+                SELECT * FROM trips WHERE distance > 100;
+                SELECT * FROM trips;
+                """;
         PrintStream original = System.out;
         try {
             for (int run = 0; run < 2; run++) {
                 var bytes = new ByteArrayOutputStream();
                 System.setOut(new PrintStream(bytes, true, StandardCharsets.UTF_8));
                 Engine.main(new String[0]);
-                String output = bytes.toString(StandardCharsets.UTF_8);
-                assertTrue(output.contains("distance GREATER_THAN 100"));
-                assertTrue(output.contains("city EQUALS Copenhagen"));
-                assertTrue(output.contains("price LESS_THAN 50.0"));
-                assertEquals(9, output.lines().filter(line -> line.startsWith("[")).count());
-                assertTrue(output.contains("[Roskilde, 31, 45.0]"));
+                assertEquals(expected,
+                        bytes.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
             }
         } finally {
             System.setOut(original);

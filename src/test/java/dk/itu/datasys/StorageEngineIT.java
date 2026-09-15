@@ -153,6 +153,17 @@ class StorageEngineIT {
         Files.writeString(catalog,Files.readString(catalog).replace("\"version\" : 1", "\"version\" : 999"));
         assertThrows(UncheckedIOException.class, () -> new StorageEngine(dir));
     }
+    @Test void exposesOrderedReadOnlySchemaAndRejectsUnknownTables() {
+        var engine = new StorageEngine(dir);
+        engine.createTable("Trips", schema);
+
+        var actual = engine.schema("Trips");
+        assertEquals(schema, actual);
+        assertThrows(UnsupportedOperationException.class,
+                () -> actual.add(new ColumnSpec("extra", ColumnType.STRING)));
+        assertThrows(IllegalArgumentException.class, () -> engine.schema("trips"));
+        assertThrows(IllegalArgumentException.class, () -> engine.schema("missing"));
+    }
     @Test void signedZeroHasNumericEqualityWithoutLosingEncodedSign() throws Exception {
         var e = new StorageEngine(dir,1); e.createTable("trips",schema);
         Path csv = dir.resolve("zeros.csv"); Files.writeString(csv, "A,1,-0.0\nB,2,0.0\n");

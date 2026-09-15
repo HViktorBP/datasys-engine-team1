@@ -3,8 +3,9 @@
 How to Build Data Systems – Fall 2026. Team 1 query engine.
 
 Requires JDK 25 or newer and Maven. Run `mvn -B verify` for unit and integration
-tests, or `mvn compile exec:java` for the three golden-example queries. The demo
-uses a fresh temporary directory and removes it afterward.
+tests, or `mvn compile exec:java` to parse and pretty-print the four Exercise 3
+SQL statements. The SQL front end parses and binds statements but does not
+execute them yet.
 
 The storage API lives in `dk.itu.datasys`. For persistent use, construct
 `new StorageEngine(Path.of("data"))`, create a table with ordered `ColumnSpec`
