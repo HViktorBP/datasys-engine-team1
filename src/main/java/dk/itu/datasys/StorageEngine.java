@@ -243,8 +243,8 @@ public final class StorageEngine {
      * @throws java.io.UncheckedIOException if the operator cannot read storage
      */
     private static List<Object[]> drain(Operator operator) {
-        operator.open();
         try {
+            operator.open();
             List<Object[]> rows = new ArrayList<>();
             Object[] row;
             while ((row = operator.next()) != null) rows.add(row);
