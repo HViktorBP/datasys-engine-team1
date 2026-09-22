@@ -101,8 +101,8 @@ public final class Executor {
     private int executeSelect(SelectStatement statement, PrintStream rowsOut) {
         var plan = planner.plan(statement);
         Operator root = plan.root();
-        root.open();
         try {
+            root.open();
             int rows = 0;
             Object[] row;
             while ((row = root.next()) != null) {
