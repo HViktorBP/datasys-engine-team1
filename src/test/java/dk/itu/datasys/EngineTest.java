@@ -12,22 +12,19 @@ class EngineTest {
     void teamName() {
         assertEquals("Team 1", new Engine().teamName());
     }
+
     @Test
-    void demoParsesAndPrintsExerciseStatementsOnRepeatedRuns() {
-        String expected = """
-                CREATE TABLE trips (city STRING, distance LONG, price DOUBLE);
-                COPY trips FROM 'trips.csv';
-                SELECT * FROM trips WHERE distance > 100;
-                SELECT * FROM trips;
-                """;
+    void noArgumentsPrintsTeamNameAndUsageOnRepeatedRuns() {
         PrintStream original = System.out;
         try {
             for (int run = 0; run < 2; run++) {
                 var bytes = new ByteArrayOutputStream();
                 System.setOut(new PrintStream(bytes, true, StandardCharsets.UTF_8));
                 Engine.main(new String[0]);
-                assertEquals(expected,
-                        bytes.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+                String output = bytes.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+                assertTrue(output.contains("Team 1"));
+                assertTrue(output.contains("-f"));
+                assertFalse(output.contains("CREATE TABLE trips"));
             }
         } finally {
             System.setOut(original);

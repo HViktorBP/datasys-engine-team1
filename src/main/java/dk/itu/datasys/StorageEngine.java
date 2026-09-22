@@ -15,13 +15,14 @@ import org.slf4j.MDC;
  * when constructed, so reopen the engine to observe catalogs published by another instance.
  *
  * @author Team 1
- * @version 0.3
+ * @version 0.4
  * @see ColumnSpec
  * @see ScanStats
+ * @see Planner
  * @since 0.2
  */
 public final class StorageEngine {
-    /** Diagnostic logger for storage operations and scan decisions. */
+    /** Diagnostic logger for storage operations. */
     private static final Logger LOGGER = LoggerFactory.getLogger(StorageEngine.class);
     /** Catalog persistence helper for the storage root. */
     private final CatalogStore catalogs;
@@ -108,7 +109,7 @@ public final class StorageEngine {
         Path temporary = null;
         Path published = null;
         try {
-            var table = table(tableName);
+            var table = requireTable(tableName);
             if (!table.files().isEmpty()) throw new UnsupportedOperationException("Only one copy per table is supported");
             if (csvFilePath == null) throw new IllegalArgumentException("CSV path is required");
             String relative = "data/" + table.id() + "-0.bin";
@@ -179,9 +180,10 @@ public final class StorageEngine {
     /**
      * Selects rows whose named column satisfies a comparison predicate.
      *
-     * <p>Rows retain input order and fields retain schema order. Catalog-only partition statistics
-     * are used to avoid reading partitions that cannot contain a match, and the resulting scan
-     * counts are available from {@link #getLastScanStats()} after a successful call.
+     * <p>Rows retain input order and fields retain schema order. The call plans a
+     * {@link FilterOperator} over a {@link ScanOperator} through {@link Planner}, which consults
+     * catalog-only partition statistics before any data file is opened. Scan counts are available
+     * from {@link #getLastScanStats()} after a successful call.
      *
      * @param tableName the table to scan
      * @param columnName the predicate column
@@ -201,55 +203,25 @@ public final class StorageEngine {
         List<Object[]> result = new ArrayList<>();
         boolean success = false;
         try {
-            var table = table(tableName);
+            requireTable(tableName);
             int predicateColumn = -1;
-            for (int i = 0; i < table.columns().size(); i++) {
-                if (table.columns().get(i).name().equals(columnName)) predicateColumn = i;
+            var columns = schema(tableName);
+            for (int i = 0; i < columns.size(); i++) {
+                if (columns.get(i).name().equals(columnName)) predicateColumn = i;
             }
             if (predicateColumn < 0) throw new IllegalArgumentException("Unknown column: " + columnName);
-            ColumnType type = table.columns().get(predicateColumn).type();
+            ColumnType type = columns.get(predicateColumn).type();
             if (comparison == null || !type.accepts(constant)) throw new IllegalArgumentException("Invalid comparison or constant type for " + type);
             if (type == ColumnType.STRING) ColumnType.requireAscii((String) constant);
-            for (var dataFile : table.files()) {
-                // Open lazily: even a missing binary file is irrelevant to an entirely pruned scan.
-                RandomAccessFile input = null;
-                try {
-                    for (var partition : dataFile.partitions()) {
-                        var statistics = partition.chunks().get(predicateColumn).statistics();
-                        boolean skip = PartitionPruner.canPrune(type, statistics, comparison, constant);
-                        LOGGER.debug("table={} column={} comparison={} const={} partition={} min={} max={} decision={}",
-                                clean(tableName), clean(columnName), comparison, clean(constant), total,
-                                clean(statistics.min()), clean(statistics.max()), skip ? "PRUNED" : "READ");
-                        total++;
-                        if (skip) { pruned++; continue; }
-                        if (input == null) {
-                            input = new RandomAccessFile(catalogs.dataPath(dataFile.path()).toFile(), "r");
-                            BinaryColumnCodec.checkHeader(input);
-                        }
-                        Object[][] columns = new Object[table.columns().size()][];
-                        for (int i = 0; i < columns.length; i++) {
-                            var chunk = partition.chunks().get(i);
-                            columns[i] = BinaryColumnCodec.readChunk(input, table.columns().get(i).type(),
-                                    chunk.offset(), chunk.length(), partition.rowCount());
-                        }
-                        read++;
-                        for (int row = 0; row < partition.rowCount(); row++) {
-                            if (comparison.matches(type.compare(columns[predicateColumn][row], constant))) {
-                                Object[] match = new Object[columns.length];
-                                for (int i = 0; i < columns.length; i++) match[i] = columns[i][row];
-                                result.add(match);
-                            }
-                        }
-                    }
-                } finally {
-                    if (input != null) input.close();
-                }
-            }
-            lastScanStats = new ScanStats(total, read, pruned);
+            var plan = new Planner(this).plan(new SelectStatement(tableName,
+                    Optional.of(new Predicate(columnName, comparison, constant))));
+            total = plan.stats().partitionsTotal();
+            read = plan.stats().partitionsRead();
+            pruned = plan.stats().partitionsPruned();
+            result.addAll(drain(plan.root()));
+            lastScanStats = plan.stats();
             success = true;
             return result;
-        } catch (IOException e) {
-            throw new UncheckedIOException("Cannot read table " + tableName, e);
         } finally {
             LOGGER.debug("operation=select table={} column={} comparison={} const={} partitionsTotal={} partitionsRead={} partitionsPruned={} rowsOut={} success={} durationMs={}",
                     clean(tableName), clean(columnName), comparison, clean(constant), total, read, pruned, result.size(), success, elapsed(start));
@@ -264,16 +236,57 @@ public final class StorageEngine {
     public synchronized ScanStats getLastScanStats() { return lastScanStats; }
 
     /**
+     * Opens an operator, collects every row, and closes it.
+     *
+     * @param operator the pipeline root
+     * @return the drained rows in production order
+     * @throws java.io.UncheckedIOException if the operator cannot read storage
+     */
+    private static List<Object[]> drain(Operator operator) {
+        try {
+            operator.open();
+            List<Object[]> rows = new ArrayList<>();
+            Object[] row;
+            while ((row = operator.next()) != null) rows.add(row);
+            return rows;
+        } finally {
+            operator.close();
+        }
+    }
+
+    /**
      * Looks up a table by logical name.
      *
      * @param name the table name
      * @return the current immutable table snapshot
      * @throws IllegalArgumentException if the table is unknown
+     * @since 0.4
      */
-    private CatalogStore.Table table(String name) {
+    synchronized CatalogStore.Table requireTable(String name) {
         var table = tables.get(name);
         if (table == null) throw new IllegalArgumentException("Unknown table: " + name);
         return table;
+    }
+
+    /**
+     * Returns the published data file for a table, or {@code null} when the table has no copy.
+     *
+     * @param tableName the table name
+     * @return the absolute data path, or {@code null} when no file is published
+     * @throws IllegalArgumentException if the table is unknown
+     * @throws UncheckedIOException if the catalog path cannot be resolved
+     * @since 0.4
+     */
+    synchronized Path publishedDataFile(String tableName) {
+        var table = requireTable(tableName);
+        if (table.files().isEmpty()) {
+            return null;
+        }
+        try {
+            return catalogs.dataPath(table.files().getFirst().path());
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot resolve data file for " + tableName, e);
+        }
     }
 
     /**
@@ -285,7 +298,7 @@ public final class StorageEngine {
      * @since 0.3
      */
     public synchronized List<ColumnSpec> schema(String tableName) {
-        return List.copyOf(table(tableName).columns());
+        return List.copyOf(requireTable(tableName).columns());
     }
 
     /**
@@ -313,7 +326,7 @@ public final class StorageEngine {
      * @param value the value to sanitize
      * @return the sanitized representation
      */
-    private static String clean(Object value) {
+    static String clean(Object value) {
         return String.valueOf(value).replace(',', ' ').replace('\n', ' ').replace('\r', ' ');
     }
 

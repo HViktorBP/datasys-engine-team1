@@ -3,9 +3,12 @@
 How to Build Data Systems – Fall 2026. Team 1 query engine.
 
 Requires JDK 25 or newer and Maven. Run `mvn -B verify` for unit and integration
-tests, or `mvn compile exec:java` to parse and pretty-print the four Exercise 3
-SQL statements. The SQL front end parses and binds statements but does not
-execute them yet.
+tests. `mvn compile exec:java` prints the team name and usage. Execute SQL with
+`mvn -q compile exec:java -Dexec.args="'SELECT * FROM trips'"` or
+`mvn -q compile exec:java -Dexec.args="-f script.sql"`. Maven splits
+`-Dexec.args` on spaces, so the statement needs a second layer of quotes.
+`SELECT` rows are headerless CSV on stdout; logs and errors go to stderr. The
+data directory is `data/` under the working directory.
 
 The storage API lives in `dk.itu.datasys`. For persistent use, construct
 `new StorageEngine(Path.of("data"))`, create a table with ordered `ColumnSpec`
