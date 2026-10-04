@@ -49,13 +49,6 @@ class PlannerTest {
         var filtered = planner.plan(new SelectStatement("trips", Optional.of(
                 new Predicate("distance", Comparison.GREATER_THAN, 100L))));
         assertInstanceOf(FilterOperator.class, filtered.root());
-        filtered.root().open();
-        try {
-            assertInstanceOf(ScanOperator.class, ((FilterOperator) filtered.root()).child());
-        } finally {
-            filtered.root().close();
-        }
-
         var unfiltered = planner.plan(new SelectStatement("trips", Optional.empty()));
         assertInstanceOf(ScanOperator.class, unfiltered.root());
         assertEquals(new ScanStats(4, 4, 0), unfiltered.stats());

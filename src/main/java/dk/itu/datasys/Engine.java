@@ -14,23 +14,30 @@ import org.slf4j.MDC;
  * Command-line SQL front door for the Team 1 query engine.
  *
  * @author Team 1
- * @version 0.4
+ * @version 0.5
  * @since 0.1
  */
 public final class Engine {
     /** Diagnostic logger for engine start and stop. */
     private static final Logger LOGGER = LoggerFactory.getLogger(Engine.class);
 
-    /** Creates the command-line entry point. */
-    public Engine() { }
+    /** Prevents instantiation of the command-line entry point. */
+    private Engine() { }
 
     /**
      * Runs the front door against {@code data/} using the process streams.
      *
-     * @param args no arguments for usage, one SQL statement, or {@code -f} and a script path
+     * <p>Failures print a diagnostic to stderr and exit with status 1. No arguments print help
+     * and return normally. A single positional SQL argument remains supported.
+     *
+     * @param args no arguments for usage, {@code -c} and SQL, or {@code -f} and a script path
+     * @since 0.1
+     * @version 0.5
      */
     public static void main(String[] args) {
-        run(args, Path.of("data"), System.out, System.err);
+        if (run(args, Path.of("data"), System.out, System.err) != 0) {
+            System.exit(1);
+        }
     }
 
     /**
@@ -40,52 +47,52 @@ public final class Engine {
      * @param dataDirectory the storage root
      * @param out the stream for usage text or {@code SELECT} CSV
      * @param err the stream for usage errors and execution failures
+     * @return 0 for help or successful execution, or 1 for an argument, parse, or runtime failure
+     * @since 0.4
+     * @version 0.5
      */
-    static void run(String[] args, Path dataDirectory, PrintStream out, PrintStream err) {
+    static int run(String[] args, Path dataDirectory, PrintStream out, PrintStream err) {
         MDC.put("sessionId", UUID.randomUUID().toString());
         MDC.put("statementNumber", "0");
         LOGGER.debug("operation=start");
         try {
             if (args == null || args.length == 0) {
                 out.print(usage());
-                return;
+                return 0;
             }
             String sql;
             try {
                 sql = script(args);
             } catch (IllegalArgumentException error) {
+                LOGGER.error("operation=arguments error={}", StorageEngine.clean(error.getMessage()));
                 err.println(error.getMessage());
-                return;
+                return 1;
             }
             if (sql == null) {
+                LOGGER.error("operation=arguments error=Invalid command-line arguments");
                 err.print(usage());
-                return;
+                return 1;
             }
             var statements = parseScript(sql, err);
             if (statements == null) {
-                return;
+                return 1;
             }
             try {
                 new Executor(new StorageEngine(dataDirectory)).execute(statements, out);
             } catch (RuntimeException error) {
+                LOGGER.error("operation=execute errorType={} error={}",
+                        error.getClass().getSimpleName(), StorageEngine.clean(error.getMessage()));
                 err.println(error.getMessage());
+                return 1;
             } finally {
                 MDC.put("statementNumber", "0");
             }
+            return 0;
         } finally {
             LOGGER.debug("operation=stop");
             MDC.remove("sessionId");
             MDC.remove("statementNumber");
         }
-    }
-
-    /**
-     * Returns the team label used by usage text and tests.
-     *
-     * @return the team label
-     */
-    String teamName() {
-        return "Team 1";
     }
 
     /**
@@ -96,8 +103,12 @@ public final class Engine {
      * @throws IllegalArgumentException if {@code -f} names a file that cannot be read
      */
     private static String script(String[] args) {
-        if (args.length == 1) {
+        if (args.length == 1 && !args[0].startsWith("-")) {
             String sql = args[0].trim();
+            return sql.endsWith(";") ? sql : sql + ";";
+        }
+        if (args.length == 2 && "-c".equals(args[0])) {
+            String sql = args[1].trim();
             return sql.endsWith(";") ? sql : sql + ";";
         }
         if (args.length == 2 && "-f".equals(args[0])) {
@@ -147,19 +158,20 @@ public final class Engine {
                 Team 1
 
                 Usage:
-                  mvn -q compile exec:java
+                  ./engine
                       Print this help.
 
-                  mvn -q compile exec:java -Dexec.args="'SELECT * FROM trips'"
-                      Execute one SQL statement. Maven splits -Dexec.args on spaces,
-                      so the statement needs a second layer of quotes.
+                  ./engine -c "SELECT * FROM trips WHERE city = 'Odense'"
+                      Execute one SQL statement.
 
-                  mvn -q compile exec:java -Dexec.args="-f script.sql"
+                  ./engine -f script.sql
                       Execute every statement in a UTF-8 SQL script.
 
                 The data directory is data/ under the working directory.
                 SELECT rows are printed as headerless CSV on stdout.
                 Logs and errors go to stderr.
+                The CSV log is logs/engine.log under the working directory.
+                Set ENGINE_JAVA_OPTS to pass JVM options such as -Xmx64m.
                 """;
     }
 }

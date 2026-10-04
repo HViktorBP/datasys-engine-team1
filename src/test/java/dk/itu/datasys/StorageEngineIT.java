@@ -8,7 +8,10 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** Exercises storage persistence and the active binder/planner scan pipeline. */
 class StorageEngineIT {
+    /** Statistics from the most recently drained test plan. */
+    private ScanStats lastPlanStats;
     @TempDir Path dir;
     final List<ColumnSpec> schema = List.of(new ColumnSpec("city", ColumnType.STRING),
             new ColumnSpec("distance", ColumnType.LONG), new ColumnSpec("price", ColumnType.DOUBLE));
@@ -21,7 +24,35 @@ class StorageEngineIT {
     }
 
     List<Long> distances(StorageEngine engine, String column, Comparison comparison, Object value) {
-        return engine.select("trips", column, comparison, value).stream().map(row -> (Long) row[1]).toList();
+        return select(engine, "trips", column, comparison, value).stream().map(row -> (Long) row[1]).toList();
+    }
+
+
+    /**
+     * Collects rows through the production binder and planner instead of a legacy storage API.
+     *
+     * @param engine the storage catalog backing the pipeline
+     * @param table the table name
+     * @param column the predicate column
+     * @param comparison the comparison operator
+     * @param value the typed comparison constant
+     * @return matching rows in input order
+     */
+    private List<Object[]> select(StorageEngine engine, String table, String column,
+                                  Comparison comparison, Object value) {
+        var statement = new SelectStatement(table, Optional.of(new Predicate(column, comparison, value)));
+        new Binder(engine).bind(statement);
+        var plan = new Planner(engine).plan(statement);
+        var rows = new ArrayList<Object[]>();
+        try {
+            plan.root().open();
+            Object[] row;
+            while ((row = plan.root().next()) != null) rows.add(row);
+        } finally {
+            plan.root().close();
+        }
+        lastPlanStats = plan.stats();
+        return rows;
     }
 
     Path onlyFile(String directory) throws IOException {
@@ -31,7 +62,7 @@ class StorageEngineIT {
     @Test void persistsEmptySchemaWithSafeFilenamesAndNoData() throws Exception {
         var engine = new StorageEngine(dir);
         engine.createTable("../table / name", schema);
-        assertEquals(0, new StorageEngine(dir).select("../table / name", "city", Comparison.EQUALS, "A").size());
+        assertEquals(0, select(new StorageEngine(dir), "../table / name", "city", Comparison.EQUALS, "A").size());
         try (var files = Files.list(dir.resolve("data"))) { assertEquals(0, files.count()); }
         assertEquals(dir.resolve("catalog"), onlyFile("catalog").getParent());
         assertThrows(IllegalArgumentException.class, () -> new StorageEngine(dir).createTable("../table / name", schema));
@@ -40,13 +71,13 @@ class StorageEngineIT {
     @Test void roundTripsGoldenValuesAndSurvivesDifferentPartitionSetting() {
         var a = golden();
         var b = new StorageEngine(dir, 7);
-        var rows = b.select("trips", "distance", Comparison.GREATER_THAN, -1L);
+        var rows = select(b, "trips", "distance", Comparison.GREATER_THAN, -1L);
+        assertEquals(new ScanStats(4,4,0), lastPlanStats);
         assertEquals(List.of(12L,187L,95L,140L,210L,31L,88L,299L), rows.stream().map(r -> r[1]).toList());
         assertArrayEquals(new Object[]{"Copenhagen", 12L, 23.5}, rows.getFirst());
         assertArrayEquals(new Object[]{"Esbjerg", 299L, 450.25}, rows.getLast());
-        var original = a.select("trips", "distance", Comparison.GREATER_THAN, -1L);
+        var original = select(a, "trips", "distance", Comparison.GREATER_THAN, -1L);
         for (int i = 0; i < rows.size(); i++) assertArrayEquals(original.get(i), rows.get(i));
-        assertEquals(new ScanStats(4,4,0), b.getLastScanStats());
     }
 
     @Test void allNineComparisonsPreserveInputOrder() {
@@ -61,7 +92,7 @@ class StorageEngineIT {
         assertEquals(List.of(12L,31L), distances(e,"price",Comparison.LESS_THAN,50.0));
         assertEquals(List.of(187L,95L,140L,210L,88L,299L), distances(e,"price",Comparison.GREATER_THAN,45.0));
         assertTrue(distances(e,"distance",Comparison.GREATER_THAN,1000L).isEmpty());
-        assertEquals(new ScanStats(4,0,4), e.getLastScanStats());
+        assertEquals(new ScanStats(4,0,4), lastPlanStats);
     }
 
     @Test void rejectsInvalidApiArguments() {
@@ -71,12 +102,6 @@ class StorageEngineIT {
         assertThrows(IllegalArgumentException.class, () -> e.createTable("empty", List.of()));
         assertThrows(IllegalArgumentException.class, () -> e.createTable("duplicates", List.of(schema.getFirst(),schema.getFirst())));
         assertThrows(IllegalArgumentException.class, () -> e.copyFile("missing", "missing.csv"));
-        assertThrows(IllegalArgumentException.class, () -> e.select("missing", "city", Comparison.EQUALS, "A"));
-        assertThrows(IllegalArgumentException.class, () -> e.select("trips", "missing", Comparison.EQUALS, "A"));
-        for (Object wrong : new Object[]{1, "1", 1.0, null}) {
-            assertThrows(IllegalArgumentException.class, () -> e.select("trips", "distance", Comparison.EQUALS, wrong));
-        }
-        assertThrows(IllegalArgumentException.class, () -> e.select("trips", "city", null, "A"));
         assertThrows(UnsupportedOperationException.class, () -> new StorageEngine(dir).copyFile("trips", "src/test/resources/trips.csv"));
     }
 
@@ -109,11 +134,11 @@ class StorageEngineIT {
         Files.writeString(csv,"Copenhagen,12,23.5\nRoskilde,31,45.0\nCopenhagen,88,99.99\nOdense,95,120.75\nCopenhagen,140,210.0\nAarhus,187,301.0\nAalborg,210,340.5\nEsbjerg,299,450.25\n");
         var e = new StorageEngine(dir,2); e.createTable("trips",schema); e.copyFile("trips",csv.toString());
         assertEquals(List.of(210L,299L),distances(e,"distance",Comparison.GREATER_THAN,200L));
-        assertEquals(new ScanStats(4,1,3),e.getLastScanStats());
+        assertEquals(new ScanStats(4,1,3),lastPlanStats);
         Files.delete(onlyFile("data"));
         var restarted = new StorageEngine(dir);
         assertTrue(distances(restarted,"distance",Comparison.GREATER_THAN,1000L).isEmpty());
-        assertEquals(new ScanStats(4,0,4),restarted.getLastScanStats());
+        assertEquals(new ScanStats(4,0,4),lastPlanStats);
     }
 
     @Test void malformedCopyRollsBackAndCanBeRetriedAfterRestart() throws Exception {
@@ -134,18 +159,17 @@ class StorageEngineIT {
         Path csv = dir.resolve("small.csv"); Files.writeString(csv, "A,1,1\nB,2,2\nC,3,3\n");
         e.copyFile("trips",csv.toString());
         assertEquals(List.of(1L,2L,3L),distances(e,"distance",Comparison.GREATER_THAN,0L));
-        assertEquals(new ScanStats(2,2,0),e.getLastScanStats());
+        assertEquals(new ScanStats(2,2,0),lastPlanStats);
         e.createTable("empty",schema); Files.writeString(csv, ""); e.copyFile("empty",csv.toString());
-        assertTrue(e.select("empty","city",Comparison.EQUALS,"").isEmpty());
-        assertEquals(new ScanStats(0,0,0),e.getLastScanStats());
+        assertTrue(select(e, "empty","city",Comparison.EQUALS,"").isEmpty());
+        assertEquals(new ScanStats(0,0,0),lastPlanStats);
         assertThrows(UnsupportedOperationException.class, () -> e.copyFile("empty",csv.toString()));
     }
 
-    @Test void rejectsCorruptDataAndKeepsLastSuccessfulStats() throws Exception {
+    @Test void rejectsCorruptData() throws Exception {
         var e = golden(); distances(e,"distance",Comparison.GREATER_THAN,1000L);
         try (var f = new RandomAccessFile(onlyFile("data").toFile(),"rw")) { f.writeInt(0); }
         assertThrows(UncheckedIOException.class, () -> distances(e,"distance",Comparison.GREATER_THAN,0L));
-        assertEquals(new ScanStats(4,0,4),e.getLastScanStats());
     }
 
     @Test void rejectsUnsupportedCatalogVersions() throws Exception {
@@ -174,7 +198,7 @@ class StorageEngineIT {
             assertTrue(distances(restarted,"price",Comparison.LESS_THAN,zero).isEmpty());
             assertTrue(distances(restarted,"price",Comparison.GREATER_THAN,zero).isEmpty());
         }
-        var rows = restarted.select("trips","price",Comparison.EQUALS,0.0);
+        var rows = select(restarted, "trips","price",Comparison.EQUALS,0.0);
         assertEquals(Double.doubleToRawLongBits(-0.0), Double.doubleToRawLongBits((Double) rows.getFirst()[2]));
     }
 
@@ -201,24 +225,24 @@ class StorageEngineIT {
         String table = marker + ",name\nline\rreturn";
         var e = new StorageEngine(dir,2); e.createTable(table,schema);
         e.copyFile(table,"src/test/resources/trips.csv");
-        e.select(table,"city",Comparison.EQUALS,"a,b\nc\rd");
+        select(e, table,"city",Comparison.EQUALS,"a,b\nc\rd");
         assertThrows(IllegalArgumentException.class, () -> e.createTable(table,schema));
         var lines = Files.readAllLines(Path.of("logs/engine.log")).stream().filter(line -> line.contains(marker)).toList();
-        assertEquals(20, lines.size()); // 12 statistics + 4 decisions + 4 API summaries
+        assertEquals(19, lines.size()); // 12 statistics + 4 decisions + 3 storage summaries
         for (String line : lines) assertEquals(7,line.split(",",-1).length,line);
         assertEquals(12,lines.stream().filter(line -> line.contains(" min=") && !line.contains("decision=")).count());
         assertEquals(4,lines.stream().filter(line -> line.contains("decision=")).count());
-        assertEquals(4,lines.stream().filter(line -> line.contains("operation=")).count());
+        assertEquals(3,lines.stream().filter(line -> line.contains("operation=")).count());
     }
 
     @Test void defaultsToEightRowsAndKeepsTrailingEmptyStrings() throws Exception {
         var e = new StorageEngine(dir);
         e.createTable("trips",schema); e.copyFile("trips","src/test/resources/trips.csv");
         assertEquals(8,distances(e,"distance",Comparison.GREATER_THAN,0L).size());
-        assertEquals(new ScanStats(1,1,0),e.getLastScanStats());
+        assertEquals(new ScanStats(1,1,0),lastPlanStats);
         e.createTable("strings",List.of(new ColumnSpec("id",ColumnType.LONG),new ColumnSpec("text",ColumnType.STRING)));
         Path csv = dir.resolve("empty-string.csv"); Files.writeString(csv,"1,\n"); e.copyFile("strings",csv.toString());
-        assertArrayEquals(new Object[]{1L,""},new StorageEngine(dir).select("strings","text",Comparison.EQUALS,"").getFirst());
+        assertArrayEquals(new Object[]{1L,""},select(new StorageEngine(dir), "strings","text",Comparison.EQUALS,"").getFirst());
     }
 
 }

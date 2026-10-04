@@ -2,24 +2,52 @@
 
 How to Build Data Systems – Fall 2026. Team 1 query engine.
 
-Requires JDK 25 or newer and Maven. Run `mvn -B verify` for unit and integration
-tests. `mvn compile exec:java` prints the team name and usage. Execute SQL with
-`mvn -q compile exec:java -Dexec.args="'SELECT * FROM trips'"` or
-`mvn -q compile exec:java -Dexec.args="-f script.sql"`. Maven splits
-`-Dexec.args` on spaces, so the statement needs a second layer of quotes.
-`SELECT` rows are headerless CSV on stdout; logs and errors go to stderr. The
-data directory is `data/` under the working directory.
+Requires JDK 25 or newer and Maven. Build and run the JUnit 6 unit and integration
+tests with `mvn -B verify`. Packaging produces the self-contained
+`target/engine.jar`, including the logging backend.
 
-The storage API lives in `dk.itu.datasys`. For persistent use, construct
-`new StorageEngine(Path.of("data"))`, create a table with ordered `ColumnSpec`
-values, then call `copyFile` with a headerless ASCII CSV. The optional second
-constructor argument sets the maximum partition size (default: 8).
-`select` accepts exact `String`, `Long`, or `Double` constants and returns rows
-in input order. `getLastScanStats()` reports the latest successful scan.
+```bash
+mvn -B package
+./engine
+./engine -c "SELECT * FROM trips WHERE city = 'Odense'"
+./engine -f script.sql > ours.csv
+ENGINE_JAVA_OPTS=-Xmx64m ./engine -f script.sql
+```
 
-Use one writer engine per directory; reopen the engine to reload catalogs
-written by another instance. Part 1 supports one successful copy per table.
-I/O failures are surfaced as `UncheckedIOException`; invalid API arguments and
-malformed CSV rows use `IllegalArgumentException`. Generated state belongs
-under the Git-ignored `data/` directory. The format and publication rules are
-specified in [the storage design](docs/storage-design.md).
+`-c` accepts SQL with or without a final semicolon; `-f` reads a UTF-8 script
+whose statements end with semicolons. A single positional SQL argument is also
+supported. Scripts stop at the first failure, retain earlier successful
+statements and output, and exit with status 1. Successful execution and help
+exit with status 0. `SELECT` writes headerless CSV to stdout. Diagnostics go to
+stderr and `logs/engine.log`; data and logs are relative to the working directory.
+The launcher locates the JAR relative to itself, so it works from other directories.
+`ENGINE_JAVA_OPTS` accepts space-separated JVM options.
+
+The seven log columns are timestamp, sessionId, statementNumber, threadId,
+logLevel, className, and logMessage. Normal records use `DEBUG`; failures use
+`ERROR`. Messages are ASCII without commas, double quotes, or line breaks;
+non-ASCII diagnostic characters use hexadecimal escapes. A session
+has a UUID; executed statements are numbered from 1. Argument, parsing, startup,
+start, and stop records use statement 0. Ordinary execution failures retain the
+failing statement's number. Fatal JVM errors are not handled as ordinary failures.
+
+Run `scripts/log-analysis.sh` after packaging for an isolated demonstration:
+it generates successful and failing sessions, imports a snapshot of the active
+log, and saves the engine's session, statement 7, and error query results. `COPY`
+captures the source's byte length when opened and excludes subsequent appends,
+including its own log records. It does not protect against in-place edits or
+truncation. Logs rotate at 10 MB, so a snapshot includes only the active file.
+
+Storage uses `new StorageEngine(Path.of("data"))`; the optional second constructor
+argument sets the maximum partition size (default: 8). The front door executes
+`parse → bind → plan → open/next/close → CSV`; it streams query results. Exercise 5
+removed the test-only `StorageEngine.select` materializing API, its scan-statistics
+getter, and `SqlPrinter`. `QueryPlan.stats()` and planner `decision=` records
+describe partition activity.
+
+Use one writer engine per directory; reopen it to reload catalogs written by
+another instance. Part 1 supports one successful copy per table. Generated state
+belongs under the Git-ignored `data/` directory. See the
+[storage design](docs/storage-design.md),
+[debugger walkthrough and release checklist](docs/exercise-5.md), and
+[experiment design](docs/experiment-design.md).

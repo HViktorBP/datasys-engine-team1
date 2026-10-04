@@ -51,7 +51,7 @@
    list contains at most one entry for now. That entry points to one binary file
    containing all partitions from the copy.
 
-   **Why:** `select` needs the schema to interpret bytes, the partition order to
+   **Why:** The planner and scan need the schema to interpret bytes, the partition order to
    preserve input order, and offsets to seek directly to each column chunk.
    Keeping a list even in Part 1 avoids changing the catalog model when append
    support introduces additional data files later. One binary file per table
@@ -81,7 +81,7 @@
    column's schema type: decimal text for `LONG`, `Double.toString` text for
    `DOUBLE`, and the original value for `STRING`.
 
-   **Why:** `select` can decide whether to prune every partition by reading only
+   **Why:** The planner can decide whether to prune every partition by reading only
    the catalog; it does not need to open the binary file or read the predicate
    column first. Encoding statistics as strings avoids a JSON library narrowing
    a small long to an integer or changing numeric precision. The schema supplies
@@ -162,9 +162,14 @@
    partitions. Persisting actual row counts rather than the writer setting means
    an engine restarted with a different maximum can still read existing files.
 
-   `copyFile` buffers at most one partition of rows. When the buffer reaches the
+   `copyFile` buffers at most one partition of row values. It also accumulates
+   metadata for every partition until catalog publication; that metadata grows
+   with the number of partitions. When the row buffer reaches the
    maximum, it writes each column chunk, computes min/max, and records the
-   metadata. This bounds working memory instead of loading the entire CSV.
+   metadata. The row buffer stays bounded without loading the entire CSV.
+   Exercise 5 limits input reads to the byte length captured through the open
+   file handle, excluding appended bytes such as COPY's own live-log records.
+   This is an append boundary, not isolation from truncation or in-place edits.
 
 7. **Value encodings and framing:** e.g. `LONG` as 8-byte two's-complement,
    `DOUBLE` as 8-byte IEEE 754, `STRING` as length-prefixed ASCII bytes; magic
@@ -235,21 +240,29 @@ Helpers remain package-private so unit tests in the same package can exercise
 them without expanding the public API.
 
 `createTable` persists an empty catalog and creates no data file. `copyFile`
-supports one successful copy per table in Part 1. `select` requires an exact
-constant type (`String`, `Long`, or `Double`), preserves schema and on-disk row
-order, and publishes the latest successful result as
-`ScanStats(partitionsTotal, partitionsRead, partitionsPruned)` through
-`getLastScanStats()`.
+supports one successful copy per table in Part 1. SQL predicates require an exact
+constant type (`String`, `Long`, or `Double`) checked by the binder. The planner
+returns `QueryPlan(root, ScanStats(partitionsTotal, partitionsRead, partitionsPruned))`.
+The executor streams rows in schema and on-disk order. Exercise 5 removes the
+legacy materializing storage `select` API and its last-successful-statistics getter.
 
-Each `createTable`, `copyFile`, and `select` call emits a comma-free summary log.
-Every min/max is logged where `copyFile` computes it, and every `READ` or
-`PRUNED` decision is logged where `select` makes it. Dynamic values have commas
-and line breaks replaced so the existing Log4j2 pattern always produces exactly
-seven CSV fields.
+Each `createTable` and `copyFile` call emits a summary log. Every min/max is
+logged where `copyFile` computes it; every predicate `READ` or `PRUNED` decision
+is logged in the planner before data files open. The executor logs planned
+partition counts and a successful statement's row count and elapsed milliseconds.
+Normal records use `DEBUG`; front-door argument and runtime failures and parser
+failures use `ERROR`. Cleanup failures also use `ERROR`. Dynamic values have
+commas, double quotes, and line breaks replaced and non-ASCII code units escaped
+as ASCII hexadecimal text so each application log record
+fits the seven-field CSV layout. Fatal JVM errors can escape without an error record.
 
 Unit tests cover codec round trips, statistics, pruning, and CSV parsing.
 Integration tests cover persistence, validation, all comparison/type
 combinations, partition metadata, pruning statistics, and the golden example.
 Maven Surefire runs `*Test` classes; Failsafe 3.5.6 runs `*IT` classes during
-`verify`. The no-argument `Engine.main` uses isolated temporary files and prints
-the three required golden queries so repeated demo runs do not conflict.
+`verify`, including tests of the shaded JAR and executable launcher. The
+no-argument `Engine.main` prints usage; `-c` runs SQL and `-f` runs a script.
+The front door assigns a session UUID and one-based executed statement numbers.
+Argument, parse, startup, start, and stop records have statement number zero.
+Runtime failure records retain the failing statement's number, then the front
+door resets and removes MDC before returning. Failures exit with process status 1.
