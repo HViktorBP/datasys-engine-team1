@@ -6,3 +6,4 @@ exercises can keep the same bar.
 | Exercise | Week | File |
 | --- | --- | --- |
 | Exercise 3: Parsing SQL Text into a Bound AST | 3 | [exercise-3.md](exercise-3.md) |
+| Exercise 4: Volcano pipeline and SQL front door | 4 | [exercise-4.md](exercise-4.md) |
