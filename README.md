@@ -39,7 +39,9 @@ including its own log records. It does not protect against in-place edits or
 truncation. Logs rotate at 10 MB, so a snapshot includes only the active file.
 
 Storage uses `new StorageEngine(Path.of("data"))`; the optional second constructor
-argument sets the maximum partition size (default: 8). The front door executes
+argument sets the maximum partition size (default: 1,000). This setting applies
+to future imports; existing data retains its persisted partition boundaries.
+The front door executes
 `parse → bind → plan → open/next/close → CSV`; it streams query results. Exercise 5
 removed the test-only `StorageEngine.select` materializing API, its scan-statistics
 getter, and `SqlPrinter`. `QueryPlan.stats()` and planner `decision=` records

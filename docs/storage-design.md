@@ -145,22 +145,25 @@
 
    **Original answer:** 8 but will be changed pobably later on
 
-   **Explanation:** The implementation defaults to eight rows per partition
-   and adds two constructors:
+   **Explanation:** Exercise 5 changes the default from eight to 1,000 rows per
+   partition. Two constructors are available:
 
    ```java
    public StorageEngine(Path dataDirectory)
    public StorageEngine(Path dataDirectory, int maxRowsPerPartition)
    ```
 
-   The first uses `8`; the overload rejects values less than one. Each
+   The first uses `1000`; the overload rejects values less than one. Each
    partition's actual row count is persisted in the catalog, but the configured
    maximum is not.
 
-   **Why:** Eight is the team's chosen initial default and keeps demonstration
-   files easy to inspect. The overload makes the setting testable with two-row
-   partitions. Persisting actual row counts rather than the writer setting means
-   an engine restarted with a different maximum can still read existing files.
+   **Why:** The team chose 1,000 as the new default. Larger partitions reduce
+   the number of catalog entries, while increasing the row buffer and the size
+   of chunks read when a partition survives pruning. The overload still permits
+   two-row partitions in tests. The setting applies only to future imports;
+   existing data retains its persisted boundaries. Persisting actual row counts
+   rather than the writer setting means an engine restarted with a different
+   maximum can still read existing files.
 
    `copyFile` buffers at most one partition of row values. It also accumulates
    metadata for every partition until catalog publication; that metadata grows

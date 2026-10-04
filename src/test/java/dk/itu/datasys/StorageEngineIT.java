@@ -235,11 +235,20 @@ class StorageEngineIT {
         assertEquals(3,lines.stream().filter(line -> line.contains("operation=")).count());
     }
 
-    @Test void defaultsToEightRowsAndKeepsTrailingEmptyStrings() throws Exception {
+    @Test void defaultsToThousandRowsAndKeepsTrailingEmptyStrings() throws Exception {
         var e = new StorageEngine(dir);
-        e.createTable("trips",schema); e.copyFile("trips","src/test/resources/trips.csv");
-        assertEquals(8,distances(e,"distance",Comparison.GREATER_THAN,0L).size());
-        assertEquals(new ScanStats(1,1,0),lastPlanStats);
+        e.createTable("trips", schema);
+        Path boundaryCsv = dir.resolve("partition-boundary.csv");
+        var input = new StringBuilder();
+        for (int id = 0; id <= 1000; id++) input.append("A,").append(id).append(",1.0\n");
+        Files.writeString(boundaryCsv, input);
+        e.copyFile("trips", boundaryCsv.toString());
+        var reopened = new StorageEngine(dir, 2);
+        assertEquals(java.util.stream.LongStream.rangeClosed(0, 1000).boxed().toList(),
+                distances(reopened, "distance", Comparison.GREATER_THAN, -1L));
+        assertEquals(new ScanStats(2,2,0), lastPlanStats);
+        assertEquals(List.of(1000, 1), reopened.requireTable("trips").files().getFirst()
+                .partitions().stream().map(CatalogStore.Partition::rowCount).toList());
         e.createTable("strings",List.of(new ColumnSpec("id",ColumnType.LONG),new ColumnSpec("text",ColumnType.STRING)));
         Path csv = dir.resolve("empty-string.csv"); Files.writeString(csv,"1,\n"); e.copyFile("strings",csv.toString());
         assertArrayEquals(new Object[]{1L,""},select(new StorageEngine(dir), "strings","text",Comparison.EQUALS,"").getFirst());

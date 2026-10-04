@@ -11,8 +11,10 @@ does sorting the input on the predicate column change that relationship?
 Sweep `SELECT * FROM observations WHERE id < k` over 65,536 unique consecutive
 IDs, from 0 through 65,535. Use `k = 0, 64, 1024, 4096, 16384, 32768, 49152,
 65536`; the exact selectivity is `k / 65536`. Keep partition size fixed at the
-front door's default of 8 rows, giving 8,192 partitions. Sorting is a controlled
-comparison; selectivity is the swept dimension.
+front door's default of 1,000 rows, giving 66 partitions: 65 full partitions and
+a final 536-row partition. Sorting is a controlled comparison; selectivity is
+the swept dimension. Import into fresh tables so their partitioning uses this
+default rather than boundaries persisted under an earlier setting.
 
 Plot x = selectivity (%) on a linear scale from 0% to 100%, y = partitions read
 / partitions considered, from 0 to 1. One curve represents sorted input; the
@@ -48,7 +50,7 @@ do not use `durationMs` to substantiate a latency claim.
    stderr to a separate file, and require exit status 0. After process exit,
    preserve its new `logs/engine.log` unchanged as that repetition's raw evidence.
    Every measured file must contain only one session, no `ERROR` lines, one
-   successful `statement=SELECT` summary, and exactly 8,192 `decision=` records.
+   successful `statement=SELECT` summary, and exactly 66 `decision=` records.
    Record the session UUID and statement number 1. Do not accidentally include
    decisions produced by later log-analysis queries or discard rotated evidence.
 6. In a separate analysis directory, create a new seven-column `logs` table for
@@ -57,7 +59,7 @@ do not use `durationMs` to substantiate a latency claim.
    query `logLevel = 'ERROR'`. Python's CSV reader can then count exported column 7
    messages containing the exact `decision=READ` or `decision=PRUNED` token. The
    SQL subset has no aggregation or compound predicates. Require that their sum
-   is 8,192; calculate `READ / (READ + PRUNED)` and store layout, `k`, repetition,
+   is 66; calculate `READ / (READ + PRUNED)` and store layout, `k`, repetition,
    session UUID, counts, ratio, and output row count. Require exactly `k` query
    output rows and equal result sets across layouts. Preserve raw and exported CSV.
 7. Plot the specified curves and report all five retained values, their median,
@@ -67,14 +69,22 @@ do not use `durationMs` to substantiate a latency claim.
 ## Hypothesis stated before the first run
 
 For sorted input, a partition is read exactly when its minimum ID is below `k`.
-The predicted fraction is `ceil(k / 8) / 8192`, approximately the selectivity.
-All selected thresholds are multiples of 8, so equality is exact here.
+The predicted fraction is `ceil(k / 1000) / 66`, with zero read partitions at
+`k = 0`. This is a staircase because each full partition covers 1,000 consecutive
+IDs; it is not exactly the row selectivity, especially near zero.
 
-For shuffled input, approximate uniform random placement predicts a read fraction
-`1 - (1 - s)^8`, where `s = k / 65536`. The exact expectation without replacement
-is `1 - C(65536 - k, 8) / C(65536, 8)` (zero all-nonmatching combinations if fewer
-than 8 IDs fail the predicate). The fixed seeded shuffle may differ from the
-expectation. At `k = 1024`, sorted input should read exactly 128/8192 = 1.5625%;
-shuffled input should read about 11.84%. At `k = 32768`, sorted input should read
-50%, while shuffled input should read about 99.61%. Both should read 0% at `k = 0`
+For shuffled input, approximate independent placement predicts a read fraction
+`(65 * (1 - (1 - s)^1000) + (1 - (1 - s)^536)) / 66`, where `s = k / 65536`.
+This accounts for the shorter final partition. The exact expectation without
+replacement is the average of 65 full-partition probabilities
+`1 - C(65536 - k, 1000) / C(65536, 1000)` and one final-partition probability
+`1 - C(65536 - k, 536) / C(65536, 536)`. Treat the numerator as zero when fewer
+nonmatching IDs remain than the partition's row count. The fixed seeded shuffle
+may differ from the expectation.
+
+At `k = 64`, sorted input should read exactly 1/66 = 1.5152%; the exact shuffled
+expectation is about 62.3104%. At `k = 1024`, sorted input should read exactly
+2/66 = 3.0303%, while shuffled input should read almost 100% (about 99.9997%
+in expectation). At `k = 32768`, sorted input should read 33/66 = 50%, while
+shuffled input should read approximately 100%. Both should read 0% at `k = 0`
 and 100% at `k = 65536`. These are predictions, not observed results.

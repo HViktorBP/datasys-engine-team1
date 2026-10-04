@@ -41,8 +41,9 @@ assistant's trace cannot satisfy the course's individual ownership requirement.
    resolves the persisted schema. The binder finds `distance` and checks that
    its constant is a `Long`; it does not open data files.
 4. Step through `Planner.plan`: catalog min/max values go to
-   `PartitionPruner.canPrune`. The default eight-row partition has distance
-   range 12–299, so this predicate keeps it. With two-row partitions, the fixture
+   `PartitionPruner.canPrune`. The eight-row fixture fits in one partition under
+   the 1,000-row default. Its distance range is 12–299, so this predicate keeps it.
+   With two-row partitions, the fixture
    ranges are 12–187, 95–140, 31–210, and 88–299, and all four survive because
    each maximum is above 100. The plan is `FilterOperator(ScanOperator(...))`.
 5. Step into `Executor.executeSelect`, `FilterOperator.open`, and

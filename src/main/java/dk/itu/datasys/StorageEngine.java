@@ -31,7 +31,10 @@ public final class StorageEngine {
     private final int maxRowsPerPartition;
 
     /**
-     * Opens a storage directory using a maximum of eight rows per partition.
+     * Opens a storage directory using a maximum of 1,000 rows per partition.
+     *
+     * <p>The default changed from eight to 1,000 in release 0.5. It applies to future imports;
+     * existing data retains the partition boundaries recorded in its catalog.
      *
      * @param dataDirectory the root directory for catalogs and column data
      * @throws IllegalArgumentException if {@code dataDirectory} is {@code null}
@@ -39,7 +42,7 @@ public final class StorageEngine {
      * @since 0.2
      * @version 0.5
      */
-    public StorageEngine(Path dataDirectory) { this(dataDirectory, 8); }
+    public StorageEngine(Path dataDirectory) { this(dataDirectory, 1000); }
 
     /**
      * Opens a storage directory using the specified maximum partition size.
