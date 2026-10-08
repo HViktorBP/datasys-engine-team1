@@ -251,7 +251,10 @@ legacy materializing storage `select` API and its last-successful-statistics get
 
 Each `createTable` and `copyFile` call emits a summary log. Every min/max is
 logged where `copyFile` computes it; every predicate `READ` or `PRUNED` decision
-is logged in the planner before data files open. The executor logs planned
+is logged in the planner before data files open. Queries without `WHERE` also
+log one `table=... partition=... decision=READ reason=noPredicate` record per
+partition, using its zero-based catalog index; empty tables have no decisions.
+The executor logs planned
 partition counts and a successful statement's row count and elapsed milliseconds.
 Normal records use `DEBUG`; front-door argument and runtime failures and parser
 failures use `ERROR`. Cleanup failures also use `ERROR`. Dynamic values have

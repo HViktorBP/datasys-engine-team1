@@ -98,6 +98,14 @@ Exercise 5 deliberately supersedes their requirement to retain the storage
 selection API and pretty-printer tests. The current storage design and README
 describe the implemented contract.
 
+## Review feedback: partition decisions
+
+Queries without `WHERE` now log one `decision=READ reason=noPredicate` record
+per catalog partition in the planner, before any data file opens. Empty tables
+have no partitions to log. This supersedes the Exercise 4 design's decision to
+omit these records. The historical validation counts above predate this change;
+rerunning the demo produces additional records for unfiltered queries.
+
 ## Release v0.5
 
 Local verification covers unit tests, integration tests, packaged subprocesses,
