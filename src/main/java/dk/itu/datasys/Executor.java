@@ -13,7 +13,7 @@ import org.slf4j.MDC;
  * Volcano pipeline and writes headerless CSV rows.
  *
  * @author Team 1
- * @version 0.4
+ * @version 0.5
  * @since 0.4
  */
 public final class Executor {
@@ -31,6 +31,8 @@ public final class Executor {
      *
      * @param engine the storage engine
      * @throws IllegalArgumentException if {@code engine} is {@code null}
+     * @since 0.4
+     * @version 0.5
      */
     public Executor(StorageEngine engine) {
         if (engine == null) {
@@ -52,6 +54,8 @@ public final class Executor {
      * @throws IllegalArgumentException if {@code statements} or {@code rowsOut} is {@code null}, or
      *                                  a statement fails catalog or API validation
      * @throws java.io.UncheckedIOException if storage I/O fails
+     * @since 0.4
+     * @version 0.5
      */
     public void execute(List<Statement> statements, PrintStream rowsOut) {
         if (statements == null) {
@@ -92,7 +96,7 @@ public final class Executor {
     }
 
     /**
-     * Plans and drains a select pipeline, writing matching rows as CSV.
+     * Plans and drains a select pipeline, logging partition counts and writing rows as CSV.
      *
      * @param statement the select statement
      * @param rowsOut the CSV destination
@@ -100,6 +104,9 @@ public final class Executor {
      */
     private int executeSelect(SelectStatement statement, PrintStream rowsOut) {
         var plan = planner.plan(statement);
+        LOGGER.debug("table={} partitionsTotal={} partitionsRead={} partitionsPruned={}",
+                StorageEngine.clean(statement.tableName()), plan.stats().partitionsTotal(),
+                plan.stats().partitionsRead(), plan.stats().partitionsPruned());
         Operator root = plan.root();
         try {
             root.open();

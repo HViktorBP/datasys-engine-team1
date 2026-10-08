@@ -15,9 +15,8 @@ import org.slf4j.MDC;
  * when constructed, so reopen the engine to observe catalogs published by another instance.
  *
  * @author Team 1
- * @version 0.4
+ * @version 0.5
  * @see ColumnSpec
- * @see ScanStats
  * @see Planner
  * @since 0.2
  */
@@ -30,17 +29,20 @@ public final class StorageEngine {
     private final Map<String, CatalogStore.Table> tables;
     /** Positive maximum number of rows written to each partition. */
     private final int maxRowsPerPartition;
-    /** Statistics from the latest successful scan. */
-    private ScanStats lastScanStats = new ScanStats(0, 0, 0);
 
     /**
-     * Opens a storage directory using a maximum of eight rows per partition.
+     * Opens a storage directory using a maximum of 1,000 rows per partition.
+     *
+     * <p>The default changed from eight to 1,000 in release 0.5. It applies to future imports;
+     * existing data retains the partition boundaries recorded in its catalog.
      *
      * @param dataDirectory the root directory for catalogs and column data
      * @throws IllegalArgumentException if {@code dataDirectory} is {@code null}
      * @throws UncheckedIOException if the storage directory cannot be initialized or loaded
+     * @since 0.2
+     * @version 0.5
      */
-    public StorageEngine(Path dataDirectory) { this(dataDirectory, 8); }
+    public StorageEngine(Path dataDirectory) { this(dataDirectory, 1000); }
 
     /**
      * Opens a storage directory using the specified maximum partition size.
@@ -50,6 +52,8 @@ public final class StorageEngine {
      * @throws IllegalArgumentException if the directory is {@code null} or the partition size is
      *                                  not positive
      * @throws UncheckedIOException if the storage directory cannot be initialized or loaded
+     * @since 0.2
+     * @version 0.5
      */
     public StorageEngine(Path dataDirectory, int maxRowsPerPartition) {
         if (dataDirectory == null) throw new IllegalArgumentException("Data directory is required");
@@ -70,6 +74,8 @@ public final class StorageEngine {
      * @param columns the non-empty ordered column definitions
      * @throws IllegalArgumentException if the schema is invalid or the table already exists
      * @throws UncheckedIOException if the catalog cannot be persisted
+     * @since 0.2
+     * @version 0.5
      */
     public synchronized void createTable(String tableName, List<ColumnSpec> columns) {
         long start = startCall();
@@ -93,6 +99,8 @@ public final class StorageEngine {
      *
      * <p>The import preserves input row order and publishes the completed binary data before its
      * catalog snapshot. Part 1 supports one successful copy per table.
+     * The input is limited to its byte length at open time, so importing a live log excludes
+     * records appended during the import. This does not isolate in-place edits or truncation.
      *
      * @param tableName the destination table name
      * @param csvFilePath the source CSV file path
@@ -100,6 +108,8 @@ public final class StorageEngine {
      *                                  table schema
      * @throws UnsupportedOperationException if the table already has a copied data file
      * @throws UncheckedIOException if the source or destination cannot be read or written
+     * @since 0.2
+     * @version 0.5
      */
     public synchronized void copyFile(String tableName, String csvFilePath) {
         long start = startCall();
@@ -116,7 +126,8 @@ public final class StorageEngine {
             Path target = catalogs.dataPath(relative);
             temporary = Files.createTempFile(target.getParent(), table.id() + "-", ".tmp");
             List<CatalogStore.Partition> partitions = new ArrayList<>();
-            try (var input = Files.newBufferedReader(Path.of(csvFilePath), StandardCharsets.UTF_8);
+            try (var input = new BufferedReader(new InputStreamReader(
+                         new SnapshotInputStream(Path.of(csvFilePath)), StandardCharsets.UTF_8));
                  var output = new RandomAccessFile(temporary.toFile(), "rw")) {
                 BinaryColumnCodec.writeHeader(output);
                 List<Object[]> rows = new ArrayList<>();
@@ -178,83 +189,6 @@ public final class StorageEngine {
     }
 
     /**
-     * Selects rows whose named column satisfies a comparison predicate.
-     *
-     * <p>Rows retain input order and fields retain schema order. The call plans a
-     * {@link FilterOperator} over a {@link ScanOperator} through {@link Planner}, which consults
-     * catalog-only partition statistics before any data file is opened. Scan counts are available
-     * from {@link #getLastScanStats()} after a successful call.
-     *
-     * @param tableName the table to scan
-     * @param columnName the predicate column
-     * @param comparison the comparison operator
-     * @param constant the predicate constant with the column's exact Java type
-     * @return matching rows in input order
-     * @throws IllegalArgumentException if the table or column is unknown or the comparison value
-     *                                  is invalid for the column type
-     * @throws UncheckedIOException if published table data cannot be read or decoded
-     */
-    public synchronized List<Object[]> select(String tableName, String columnName,
-                                               Comparison comparison, Object constant) {
-        long start = startCall();
-        int total = 0;
-        int read = 0;
-        int pruned = 0;
-        List<Object[]> result = new ArrayList<>();
-        boolean success = false;
-        try {
-            requireTable(tableName);
-            int predicateColumn = -1;
-            var columns = schema(tableName);
-            for (int i = 0; i < columns.size(); i++) {
-                if (columns.get(i).name().equals(columnName)) predicateColumn = i;
-            }
-            if (predicateColumn < 0) throw new IllegalArgumentException("Unknown column: " + columnName);
-            ColumnType type = columns.get(predicateColumn).type();
-            if (comparison == null || !type.accepts(constant)) throw new IllegalArgumentException("Invalid comparison or constant type for " + type);
-            if (type == ColumnType.STRING) ColumnType.requireAscii((String) constant);
-            var plan = new Planner(this).plan(new SelectStatement(tableName,
-                    Optional.of(new Predicate(columnName, comparison, constant))));
-            total = plan.stats().partitionsTotal();
-            read = plan.stats().partitionsRead();
-            pruned = plan.stats().partitionsPruned();
-            result.addAll(drain(plan.root()));
-            lastScanStats = plan.stats();
-            success = true;
-            return result;
-        } finally {
-            LOGGER.debug("operation=select table={} column={} comparison={} const={} partitionsTotal={} partitionsRead={} partitionsPruned={} rowsOut={} success={} durationMs={}",
-                    clean(tableName), clean(columnName), comparison, clean(constant), total, read, pruned, result.size(), success, elapsed(start));
-        }
-    }
-
-    /**
-     * Returns statistics for the latest successful scan.
-     *
-     * @return the latest scan statistics, or zero counts before the first successful scan
-     */
-    public synchronized ScanStats getLastScanStats() { return lastScanStats; }
-
-    /**
-     * Opens an operator, collects every row, and closes it.
-     *
-     * @param operator the pipeline root
-     * @return the drained rows in production order
-     * @throws java.io.UncheckedIOException if the operator cannot read storage
-     */
-    private static List<Object[]> drain(Operator operator) {
-        try {
-            operator.open();
-            List<Object[]> rows = new ArrayList<>();
-            Object[] row;
-            while ((row = operator.next()) != null) rows.add(row);
-            return rows;
-        } finally {
-            operator.close();
-        }
-    }
-
-    /**
      * Looks up a table by logical name.
      *
      * @param name the table name
@@ -296,6 +230,7 @@ public final class StorageEngine {
      * @return the ordered column definitions
      * @throws IllegalArgumentException if the table is unknown
      * @since 0.3
+     * @version 0.5
      */
     public synchronized List<ColumnSpec> schema(String tableName) {
         return List.copyOf(requireTable(tableName).columns());
@@ -321,13 +256,30 @@ public final class StorageEngine {
     private static long elapsed(long start) { return (System.nanoTime() - start) / 1_000_000; }
 
     /**
-     * Produces a single-line, comma-free representation for structured log values.
+     * Produces single-line ASCII text without commas or double quotes for log values.
+     *
+     * <p>Non-ASCII UTF-16 code units become hexadecimal escapes so diagnostics can be imported
+     * by the engine's ASCII CSV reader, including paths supplied through {@code -f}.
      *
      * @param value the value to sanitize
-     * @return the sanitized representation
+     * @return the sanitized ASCII representation
+     * @since 0.2
+     * @version 0.5
      */
     static String clean(Object value) {
-        return String.valueOf(value).replace(',', ' ').replace('\n', ' ').replace('\r', ' ');
+        String text = String.valueOf(value);
+        var result = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char character = text.charAt(i);
+            if (character > 127) {
+                result.append(String.format(Locale.ROOT, "\\u%04x", (int) character));
+            } else if (character == ',' || character == '"' || character == '\n' || character == '\r') {
+                result.append(' ');
+            } else {
+                result.append(character);
+            }
+        }
+        return result.toString();
     }
 
     /**
@@ -337,6 +289,6 @@ public final class StorageEngine {
      */
     private static void removeFailedFile(Path path) {
         try { Files.deleteIfExists(path); }
-        catch (IOException e) { LOGGER.warn("operation=cleanup path={} error={}", clean(path), clean(e.getMessage())); }
+        catch (IOException e) { LOGGER.error("operation=cleanup path={} error={}", clean(path), clean(e.getMessage())); }
     }
 }
