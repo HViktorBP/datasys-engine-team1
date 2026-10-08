@@ -28,6 +28,8 @@ public final class Planner {
      *
      * @param engine the engine whose catalogs supply partitions
      * @throws IllegalArgumentException if {@code engine} is {@code null}
+     * @since 0.4
+     * @version 0.5
      */
     public Planner(StorageEngine engine) {
         if (engine == null) {
@@ -45,6 +47,8 @@ public final class Planner {
      * @param statement the bound select statement
      * @return the operator tree and catalog {@link ScanStats}
      * @throws IllegalArgumentException if the table or predicate column is unknown
+     * @since 0.4
+     * @version 0.5
      */
     public QueryPlan plan(SelectStatement statement) {
         var table = engine.requireTable(statement.tableName());

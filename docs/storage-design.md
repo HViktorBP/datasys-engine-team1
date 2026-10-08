@@ -254,8 +254,14 @@ logged where `copyFile` computes it; every predicate `READ` or `PRUNED` decision
 is logged in the planner before data files open. Queries without `WHERE` also
 log one `table=... partition=... decision=READ reason=noPredicate` record per
 partition, using its zero-based catalog index; empty tables have no decisions.
-The executor logs planned
-partition counts and a successful statement's row count and elapsed milliseconds.
+The executor logs planned partition counts and a successful statement's row count
+and elapsed milliseconds. The first `ScanOperator.close` after each open attempt
+logs `operation=scan file=... partitionsRead=... rowsOut=... durationMs=...`,
+including empty scans and partial progress after failures. These are actual
+fully decoded partitions and rows returned by the scan before filtering, rather
+than planned counts or final query output. Duration runs from the start of open
+through close, including time spent consuming rows. Repeated closes do not
+duplicate the summary, and reopening resets its counters and timer.
 Normal records use `DEBUG`; front-door argument and runtime failures and parser
 failures use `ERROR`. Cleanup failures also use `ERROR`. Dynamic values have
 commas, double quotes, and line breaks replaced and non-ASCII code units escaped

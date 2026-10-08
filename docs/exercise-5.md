@@ -98,13 +98,27 @@ Exercise 5 deliberately supersedes their requirement to retain the storage
 selection API and pretty-printer tests. The current storage design and README
 describe the implemented contract.
 
-## Review feedback: partition decisions
+## Review feedback: partition decisions and scan summaries
 
 Queries without `WHERE` now log one `decision=READ reason=noPredicate` record
 per catalog partition in the planner, before any data file opens. Empty tables
 have no partitions to log. This supersedes the Exercise 4 design's decision to
 omit these records. The historical validation counts above predate this change;
-rerunning the demo produces additional records for unfiltered queries.
+rerunning the demo produces additional records for unfiltered queries and scans.
+
+`ScanOperator.close` now logs the file, actual fully decoded partitions, rows
+emitted before filtering, and elapsed milliseconds from open through close.
+Each open attempt gets one summary on close, including empty, partial, or failed
+scans; repeated closes do not duplicate it. Reopening resets the counters.
+These `DEBUG` progress records complement the front door's `ERROR` failure
+records and the executor's planned partition counts. For a filtered query,
+the scan summary precedes the filter and successful statement summaries.
+
+Local validation on 2026-10-08 passed 29 unit tests and 28 integration tests,
+plus private-inclusive Javadocs with full doclint and no warnings. The log
+analysis demo now imports 30 records for the failing session, including the
+unfiltered partition decision and four scan summaries. It still finds exactly
+one statement-7 record and one `ERROR` record.
 
 ## Release v0.5
 
