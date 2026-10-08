@@ -14,3 +14,8 @@ jobs:
           java-version: '25'
           cache: maven
       - run: mvn -B verify
+      - run: python3 -m venv /tmp/experiment-python
+      - run: /tmp/experiment-python/bin/python -m pip install -r scripts/experiment-requirements.txt
+      - run: /tmp/experiment-python/bin/python -m unittest discover -s scripts/tests -v
+        env:
+          PYTHONPATH: scripts

@@ -16,8 +16,9 @@ Use decimal units: 1 KB = 1,000 bytes and 1 MB = 1,000,000 bytes. Commit the
 generator and its fixed seed before taking measurements, and record each
 file's actual byte size and row count.
 
-Generate distance uniformly over [0, 1000). The predicate distance > 900 should
-match approximately 10% of rows; record the actual matching count as well.
+Generate distance as a LONG, uniformly choosing integers from 0 to 999.
+The predicate distance > 900 should match approximately 10% of rows; record
+the actual matching count as well.
 For each dataset size, create two files containing exactly the same rows:
 one shuffled using a fixed seed, and one sorted by distance. Reuse these files
 for every partition size and machine. Generate and sort them before measuring
