@@ -6,8 +6,8 @@ How does maxRowsPerPartition affect CREATE + COPY and filtered SELECT duration
 as dataset size changes?
 
 Our hypothesis is that doubling partition size should halve the running time
-of operations. We will test partition sizes of 8, 500, 1000, 5000, 10000, and
-64000 rows, using the same procedure on three machines chosen by the team.
+of operations. We will test partition sizes of 256, 512, 4096, 16384, and
+65536 rows, using the same procedure on three machines chosen by the team.
 
 ## Data
 
