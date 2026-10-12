@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Runs the packaged engine: ./engine -c "SELECT ..." or ./engine -f script.sql
+# ENGINE_JAVA_OPTS is intentionally split into JVM option words.
+exec java $ENGINE_JAVA_OPTS -jar "$(dirname "$0")/target/engine.jar" "$@"

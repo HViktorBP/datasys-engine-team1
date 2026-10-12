@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
  * Emits rows from a child operator that satisfy a typed comparison predicate.
  *
  * @author Team 1
- * @version 0.4
+ * @version 0.5
  * @since 0.4
  */
 public final class FilterOperator implements Operator {
@@ -44,15 +44,6 @@ public final class FilterOperator implements Operator {
         this.type = type;
         this.comparison = comparison;
         this.constant = constant;
-    }
-
-    /**
-     * Returns the child operator supplying candidate rows.
-     *
-     * @return the child operator
-     */
-    Operator child() {
-        return child;
     }
 
     /**

@@ -9,11 +9,6 @@ import org.junit.jupiter.api.Test;
 
 class EngineTest {
     @Test
-    void teamName() {
-        assertEquals("Team 1", new Engine().teamName());
-    }
-
-    @Test
     void noArgumentsPrintsTeamNameAndUsageOnRepeatedRuns() {
         PrintStream original = System.out;
         try {
