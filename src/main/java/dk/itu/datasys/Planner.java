@@ -10,10 +10,11 @@ import org.slf4j.LoggerFactory;
  * Turns a bound {@link SelectStatement} into a Volcano plan and records partition pruning.
  *
  * <p>Pruning uses catalog min/max statistics only. Decision log lines are emitted before any
- * operator opens a data file.
+ * operator opens a data file. Without a predicate, every partition is logged as
+ * {@code decision=READ reason=noPredicate}.
  *
  * @author Team 1
- * @version 0.4
+ * @version 0.5
  * @since 0.4
  */
 public final class Planner {
@@ -27,6 +28,8 @@ public final class Planner {
      *
      * @param engine the engine whose catalogs supply partitions
      * @throws IllegalArgumentException if {@code engine} is {@code null}
+     * @since 0.4
+     * @version 0.5
      */
     public Planner(StorageEngine engine) {
         if (engine == null) {
@@ -38,9 +41,14 @@ public final class Planner {
     /**
      * Builds a scan or filter-over-scan plan for a select statement.
      *
+     * <p>Logs one read/prune decision per catalog partition before opening data files,
+     * including read decisions when the statement has no predicate.
+     *
      * @param statement the bound select statement
      * @return the operator tree and catalog {@link ScanStats}
      * @throws IllegalArgumentException if the table or predicate column is unknown
+     * @since 0.4
+     * @version 0.5
      */
     public QueryPlan plan(SelectStatement statement) {
         var table = engine.requireTable(statement.tableName());
@@ -50,6 +58,10 @@ public final class Planner {
         var where = statement.where();
         if (where.isEmpty()) {
             int total = partitions.size();
+            for (int index = 0; index < total; index++) {
+                LOGGER.debug("table={} partition={} decision=READ reason=noPredicate",
+                        StorageEngine.clean(statement.tableName()), index);
+            }
             return new QueryPlan(new ScanOperator(dataFile, columns, partitions),
                     new ScanStats(total, total, 0));
         }

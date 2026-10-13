@@ -2,13 +2,16 @@ package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.MDC;
 
 class PlannerTest {
     @TempDir Path dir;
@@ -16,6 +19,57 @@ class PlannerTest {
             new ColumnSpec("city", ColumnType.STRING),
             new ColumnSpec("distance", ColumnType.LONG),
             new ColumnSpec("price", ColumnType.DOUBLE));
+
+    @Test
+    void logsEveryUnfilteredPartitionBeforeOpeningData() throws Exception {
+        var engine = new StorageEngine(dir, 2);
+        engine.createTable("unfiltered,\"table\n", schema);
+        engine.copyFile("unfiltered,\"table\n", "src/test/resources/trips.csv");
+        Files.delete(engine.publishedDataFile("unfiltered,\"table\n"));
+        String session = UUID.randomUUID().toString();
+        var previous = MDC.getCopyOfContextMap();
+        try {
+            MDC.put("sessionId", session);
+            MDC.put("statementNumber", "7");
+            var plan = new Planner(engine).plan(new SelectStatement("unfiltered,\"table\n", Optional.empty()));
+            assertEquals(new ScanStats(4, 4, 0), plan.stats());
+            var records = Files.readAllLines(Path.of("logs/engine.log")).stream()
+                    .map(line -> line.split(",", -1))
+                    .filter(fields -> fields[1].equals(session)).toList();
+            assertEquals(4, records.size());
+            for (int index = 0; index < records.size(); index++) {
+                var fields = records.get(index);
+                assertEquals(7, fields.length);
+                assertEquals("7", fields[2]);
+                assertEquals("DEBUG", fields[4]);
+                assertEquals("Planner", fields[5]);
+                assertEquals("table=unfiltered  table  partition=" + index
+                        + " decision=READ reason=noPredicate", fields[6]);
+            }
+        } finally {
+            if (previous == null) MDC.clear();
+            else MDC.setContextMap(previous);
+        }
+    }
+
+    @Test
+    void unfilteredEmptyTableHasNoPartitionDecisions() throws Exception {
+        var engine = new StorageEngine(dir);
+        engine.createTable("empty", schema);
+        String session = UUID.randomUUID().toString();
+        var previous = MDC.getCopyOfContextMap();
+        try {
+            MDC.put("sessionId", session);
+            MDC.put("statementNumber", "1");
+            var plan = new Planner(engine).plan(new SelectStatement("empty", Optional.empty()));
+            assertEquals(new ScanStats(0, 0, 0), plan.stats());
+            assertTrue(Files.readAllLines(Path.of("logs/engine.log")).stream()
+                    .noneMatch(line -> line.split(",", -1)[1].equals(session)));
+        } finally {
+            if (previous == null) MDC.clear();
+            else MDC.setContextMap(previous);
+        }
+    }
 
     @Test
     void prunesImpossiblePartitionsUsingCatalogStatistics() throws Exception {
