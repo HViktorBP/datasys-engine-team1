@@ -202,4 +202,5 @@ def analyze(runs: list[Path], output: Path, diagnostic: bool = False, plots: boo
     if plots:
         from .plotting import plot_summaries
         plot_summaries(summaries, output, diagnostic=diagnostic)
+        plot_summaries(summaries, output, diagnostic=diagnostic, report=True)
     return summaries
