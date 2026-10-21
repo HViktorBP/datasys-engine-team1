@@ -10,6 +10,8 @@ from pathlib import Path
 PANELS = (("create_copy", "shuffled", "CREATE + COPY (shuffled)"),
           ("select", "sorted", "SELECT (sorted)"),
           ("select", "shuffled", "SELECT (shuffled)"))
+# One marker shape per dataset size, so the curves stay distinguishable in greyscale print.
+MARKERS = ("o", "s", "^", "D", "x", "v", "P", "*")
 
 
 def plot_summaries(summaries: list[dict], output: Path, diagnostic: bool = False,
@@ -75,6 +77,7 @@ def plot_summaries(summaries: list[dict], output: Path, diagnostic: bool = False
 def _draw_panels(axes, rows, datasets):
     """Draw one panel per workload and input order, with one curve per dataset size."""
     colors = {label: f"C{index}" for index, label in enumerate(datasets)}
+    markers = {label: MARKERS[index % len(MARKERS)] for index, label in enumerate(datasets)}
     for ax, (workload, order, title) in zip(axes, PANELS):
         panel = [row for row in rows if row["workload"] == workload and row["input_order"] == order]
         for label in datasets:
@@ -86,7 +89,7 @@ def _draw_panels(axes, rows, datasets):
                         [row["mean_ms"] for row in points],
                         yerr=[[row["mean_ms"] - row["min_ms"] for row in points],
                               [row["max_ms"] - row["mean_ms"] for row in points]],
-                        marker="o", capsize=3, label=label, color=colors[label])
+                        marker=markers[label], capsize=3, label=label, color=colors[label])
         ax.set_title(title)
         ax.set_xlabel("Partition size (rows)")
         ax.set_ylabel("Duration (ms)")
