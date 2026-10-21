@@ -1,0 +1,2 @@
+# Only chart export needs a third-party Python dependency.
+matplotlib>=3.8,<4

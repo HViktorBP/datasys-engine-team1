@@ -53,3 +53,10 @@ belongs under the Git-ignored `data/` directory. See the
 [storage design](docs/storage-design.md),
 [debugger walkthrough and release checklist](docs/exercise-5.md), and
 [experiment design](docs/experiment-design.md).
+
+For Exercise 6, see [running the experiment](docs/experiment-running.md).
+`python3 scripts/experiment.py --help` lists the reproducible generator,
+independent JVM runner, and log-analysis commands. Chart export needs the
+Python dependencies in `scripts/experiment-requirements.txt`. Final cold runs
+use a cache-control command supplied and documented by the team; development
+diagnostics are labelled separately.
