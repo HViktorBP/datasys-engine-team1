@@ -1,6 +1,5 @@
 package dk.itu.datasys;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -14,7 +13,7 @@ import org.slf4j.LoggerFactory;
  * {@code decision=READ reason=noPredicate}.
  *
  * @author Team 1
- * @version 0.5
+ * @version 0.7
  * @since 0.4
  */
 public final class Planner {
@@ -29,7 +28,7 @@ public final class Planner {
      * @param engine the engine whose catalogs supply partitions
      * @throws IllegalArgumentException if {@code engine} is {@code null}
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     public Planner(StorageEngine engine) {
         if (engine == null) {
@@ -48,13 +47,25 @@ public final class Planner {
      * @return the operator tree and catalog {@link ScanStats}
      * @throws IllegalArgumentException if the table or predicate column is unknown
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     public QueryPlan plan(SelectStatement statement) {
-        var table = engine.requireTable(statement.tableName());
+        return plan(statement, engine.requireTable(statement.tableName()));
+    }
+
+    /**
+     * Plans from the statement's captured metadata without resolving current state again.
+     *
+     * @param statement the bound select
+     * @param table the immutable statement snapshot
+     * @return the operator tree and pruning counts
+     * @throws IllegalArgumentException if the predicate column is unknown
+     * @since 0.7
+     * @version 0.7
+     */
+    QueryPlan plan(SelectStatement statement, CatalogStore.Table table) {
         var columns = table.columns();
         var partitions = allPartitions(table);
-        Path dataFile = engine.publishedDataFile(statement.tableName());
         var where = statement.where();
         if (where.isEmpty()) {
             int total = partitions.size();
@@ -62,18 +73,18 @@ public final class Planner {
                 LOGGER.debug("table={} partition={} decision=READ reason=noPredicate",
                         StorageEngine.clean(statement.tableName()), index);
             }
-            return new QueryPlan(new ScanOperator(dataFile, columns, partitions),
+            return new QueryPlan(new ScanOperator(columns, partitions),
                     new ScanStats(total, total, 0));
         }
 
         var predicate = where.orElseThrow();
         int columnIndex = columnIndex(columns, predicate.columnName());
         ColumnType type = columns.get(columnIndex).type();
-        List<CatalogStore.Partition> surviving = new ArrayList<>();
+        List<ScanOperator.PartitionRef> surviving = new ArrayList<>();
         int total = 0;
         int pruned = 0;
         for (var partition : partitions) {
-            var statistics = partition.chunks().get(columnIndex).statistics();
+            var statistics = partition.partition().chunks().get(columnIndex).statistics();
             boolean skip = PartitionPruner.canPrune(type, statistics, predicate.comparison(),
                     predicate.constant());
             LOGGER.debug("table={} column={} comparison={} const={} partition={} min={} max={} decision={}",
@@ -92,7 +103,7 @@ public final class Planner {
                 surviving.add(partition);
             }
         }
-        Operator scan = new ScanOperator(dataFile, columns, surviving);
+        Operator scan = new ScanOperator(columns, surviving);
         Operator root = new FilterOperator(scan, columnIndex, type, predicate.comparison(),
                 predicate.constant());
         return new QueryPlan(root, new ScanStats(total, surviving.size(), pruned));
@@ -104,10 +115,12 @@ public final class Planner {
      * @param table the table snapshot
      * @return partitions in catalog order
      */
-    private static List<CatalogStore.Partition> allPartitions(CatalogStore.Table table) {
-        List<CatalogStore.Partition> partitions = new ArrayList<>();
+    private List<ScanOperator.PartitionRef> allPartitions(CatalogStore.Table table) {
+        List<ScanOperator.PartitionRef> partitions = new ArrayList<>();
         for (var file : table.files()) {
-            partitions.addAll(file.partitions());
+            for (var partition : file.partitions()) {
+                partitions.add(new ScanOperator.PartitionRef(engine.dataPath(file.path()), partition));
+            }
         }
         return partitions;
     }
@@ -120,7 +133,7 @@ public final class Planner {
      * @return the zero-based column index
      * @throws IllegalArgumentException if the column is unknown
      */
-    private static int columnIndex(List<ColumnSpec> columns, String columnName) {
+    static int columnIndex(List<ColumnSpec> columns, String columnName) {
         for (int i = 0; i < columns.size(); i++) {
             if (columns.get(i).name().equals(columnName)) {
                 return i;

@@ -11,23 +11,27 @@ import org.slf4j.LoggerFactory;
 /**
  * Reads every row from a caller-supplied list of partitions and never applies a predicate.
  *
- * <p>The first close after each open attempt logs actual scan progress at debug, even when
+ * <p>File references and metadata are captured at construction. Files are opened only for
+ * handed partitions; later files are opened as the scan advances. The first close after each
+ * open attempt logs actual scan progress at debug, even when
  * opening or reading failed. The summary counts fully decoded partitions and rows returned
  * by this scan before any parent filter, with elapsed milliseconds from open through close.
  *
  * @author Team 1
- * @version 0.5
+ * @version 0.7
  * @since 0.4
  */
 public final class ScanOperator implements Operator {
     /** Diagnostic logger for completed or partial scan summaries. */
     private static final Logger LOGGER = LoggerFactory.getLogger(ScanOperator.class);
-    /** Binary file containing the handed partitions, or {@code null} when none are scanned. */
+    /** First captured file path, used as the scan's diagnostic identifier. */
     private final Path dataFile;
+    /** File currently open, or null before the first partition. */
+    private Path openFile;
     /** Ordered column definitions used to decode chunks. */
     private final List<ColumnSpec> columns;
     /** Partitions to read, in catalog order. */
-    private final List<CatalogStore.Partition> partitions;
+    private final List<PartitionRef> partitions;
     /** Open data file, or {@code null} when the scan is empty or closed. */
     private RandomAccessFile input;
     /** Index of the next partition to load. */
@@ -54,10 +58,34 @@ public final class ScanOperator implements Operator {
      * @param columns the table schema in column order
      * @param partitions the partitions to read, which may be empty
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     ScanOperator(Path dataFile, List<ColumnSpec> columns, List<CatalogStore.Partition> partitions) {
         this.dataFile = dataFile;
+        this.columns = List.copyOf(columns);
+        this.partitions = partitions.stream().map(p -> new PartitionRef(dataFile, p)).toList();
+    }
+
+    /**
+     * Pins a partition's physical file alongside its immutable metadata.
+     *
+     * @param path the absolute binary file path
+     * @param partition the captured partition metadata
+     * @since 0.7
+     * @version 0.7
+     */
+    record PartitionRef(Path path, CatalogStore.Partition partition) { }
+
+    /**
+     * Creates a scan retaining file identity and logical order across all partitions.
+     *
+     * @param columns the captured schema
+     * @param partitions the captured ordered file/partition references
+     * @since 0.7
+     * @version 0.7
+     */
+    ScanOperator(List<ColumnSpec> columns, List<PartitionRef> partitions) {
+        this.dataFile = partitions.isEmpty() ? null : partitions.getFirst().path();
         this.columns = List.copyOf(columns);
         this.partitions = List.copyOf(partitions);
     }
@@ -69,7 +97,7 @@ public final class ScanOperator implements Operator {
      * and attempts that fail to open or validate the file.
      *
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     @Override
     public void open() {
@@ -84,19 +112,14 @@ public final class ScanOperator implements Operator {
         if (partitions.isEmpty()) {
             return;
         }
-        try {
-            input = new RandomAccessFile(dataFile.toFile(), "r");
-            BinaryColumnCodec.checkHeader(input);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Cannot read " + dataFile, e);
-        }
+        openPartitionFile(partitions.getFirst().path());
     }
 
     /**
      * {@inheritDoc}
      *
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     @Override
     public Object[] next() {
@@ -120,13 +143,13 @@ public final class ScanOperator implements Operator {
      * {@inheritDoc}
      *
      * <p>The first call after each open attempt logs {@code operation=scan}, the sanitized
-     * file path, {@code partitionsRead}, {@code rowsOut}, and {@code durationMs} at debug,
+     * first captured file path (or {@code null} for a file-less scan), {@code partitionsRead}, {@code rowsOut}, and {@code durationMs} at debug,
      * including partial progress after a failure. Subsequent closes do not log again;
      * closing before any open does not log. A close failure still produces the summary.
      *
      * @throws UncheckedIOException if the data file cannot be closed
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     @Override
     public void close() {
@@ -138,6 +161,7 @@ public final class ScanOperator implements Operator {
             throw new UncheckedIOException("Cannot close " + dataFile, e);
         } finally {
             input = null;
+            openFile = null;
             if (summaryPending) {
                 summaryPending = false;
                 LOGGER.debug("operation=scan file={} partitionsRead={} rowsOut={} durationMs={}",
@@ -153,11 +177,13 @@ public final class ScanOperator implements Operator {
      * @return {@code true} when a partition was loaded
      */
     private boolean loadNextPartition() {
-        if (input == null || partitionIndex >= partitions.size()) {
+        if (partitionIndex >= partitions.size()) {
             currentColumns = null;
             return false;
         }
-        var partition = partitions.get(partitionIndex++);
+        var reference = partitions.get(partitionIndex++);
+        openPartitionFile(reference.path());
+        var partition = reference.partition();
         try {
             currentColumns = new Object[columns.size()][];
             for (int i = 0; i < columns.size(); i++) {
@@ -170,7 +196,26 @@ public final class ScanOperator implements Operator {
             partitionsRead++;
             return true;
         } catch (IOException e) {
-            throw new UncheckedIOException("Cannot read " + dataFile, e);
+            throw new UncheckedIOException("Cannot read " + openFile, e);
+        }
+    }
+
+    /**
+     * Opens a captured file when the scan moves to a partition in another file.
+     *
+     * @param path the file containing the next partition
+     * @throws UncheckedIOException if switching files or header validation fails
+     */
+    private void openPartitionFile(Path path) {
+        if (path.equals(openFile)) return;
+        try {
+            if (input != null) input.close();
+            input = null;
+            openFile = path;
+            input = new RandomAccessFile(path.toFile(), "r");
+            BinaryColumnCodec.checkHeader(input);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot read " + path, e);
         }
     }
 }

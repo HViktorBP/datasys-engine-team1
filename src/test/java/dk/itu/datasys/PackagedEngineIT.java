@@ -15,7 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
  * Exercises the shaded JAR and launcher in a separate working directory.
  *
  * @author Team 1
- * @version 0.5
+ * @version 0.7
  * @since 0.5
  */
 class PackagedEngineIT {
@@ -88,6 +88,50 @@ class PackagedEngineIT {
             assertFalse(Files.readString(dir.resolve("stderr.txt")).isBlank());
         }
         assertFalse(Files.exists(dir.resolve("data/catalog")));
+    }
+
+    @Test
+    void transactionScriptCommitsVersionsZeroThroughThreeAndReturnsSurvivors() throws Exception {
+        Files.writeString(dir.resolve("first.csv"), "1,A,1.0\n2,B,2.0\n3,C,3.0\n4,D,4.0\n");
+        Files.writeString(dir.resolve("second.csv"), "5,E,5.0\n6,F,6.0\n");
+        Files.writeString(dir.resolve("transactions.sql"), """
+                CREATE TABLE tx (id LONG, city STRING, price DOUBLE);
+                COPY tx FROM 'first.csv';
+                COPY tx FROM 'second.csv';
+                DELETE FROM tx WHERE id > 3;
+                SELECT * FROM tx;
+                """);
+        String expected = "1,A,1.0\n2,B,2.0\n3,C,3.0\n";
+        assertEquals(expected, launch("-f", "transactions.sql"));
+        var logs = Files.readAllLines(dir.resolve("logs/engine.log"));
+        for (String summary : List.of("statement=CREATE_TABLE table=tx rowsOut=0 version=0",
+                "statement=COPY table=tx rowsOut=0 version=1", "statement=COPY table=tx rowsOut=0 version=2",
+                "statement=SELECT table=tx rowsOut=3 version=3")) {
+            assertTrue(logs.stream().anyMatch(line -> line.contains(summary)), summary);
+        }
+        assertTrue(logs.stream().anyMatch(line -> line.contains("statement=DELETE table=tx rowsDeleted=3")
+                && line.contains("version=3")));
+        assertTrue(logs.stream().allMatch(line -> line.split(",", -1).length == 7));
+        assertEquals(expected, launch("-c", "SELECT * FROM tx"));
+        assertEquals("", launch("-c", "DELETE FROM tx WHERE id = 99"));
+        assertTrue(Files.readString(dir.resolve("logs/engine.log"))
+                .contains("statement=DELETE table=tx rowsDeleted=0 partitionsRewritten=0 partitionsCarried=1 partitionsRemoved=0 version=3"));
+    }
+
+    @Test
+    void failedSecondCopyPreservesFirstCommitAndStopsBeforeDelete() throws Exception {
+        Files.writeString(dir.resolve("good.csv"), "1\n2\n");
+        Files.writeString(dir.resolve("bad.csv"), "3\ninvalid\n");
+        Files.writeString(dir.resolve("failed-copy.sql"), """
+                CREATE TABLE tx (id LONG);
+                COPY tx FROM 'good.csv';
+                COPY tx FROM 'bad.csv';
+                DELETE FROM tx;
+                """);
+        assertEquals("", launch(1, "-f", "failed-copy.sql"));
+        assertEquals("1\n2\n", launch("-c", "SELECT * FROM tx"));
+        assertTrue(Files.readString(dir.resolve("logs/engine.log"))
+                .contains("statement=SELECT table=tx rowsOut=2 version=1"));
     }
 
     /**

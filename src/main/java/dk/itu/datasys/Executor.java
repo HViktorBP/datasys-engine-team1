@@ -9,11 +9,12 @@ import org.slf4j.MDC;
 /**
  * Binds, plans, and executes statements against a {@link StorageEngine}.
  *
- * <p>{@code CREATE TABLE} and {@code COPY} call storage directly. {@code SELECT} drains a planned
- * Volcano pipeline and writes headerless CSV rows.
+ * <p>{@code CREATE TABLE}, {@code COPY} and {@code DELETE} call storage directly.
+ * Each table-dependent statement captures immutable metadata before binding. {@code SELECT}
+ * drains a planned Volcano pipeline and writes headerless CSV rows.
  *
  * @author Team 1
- * @version 0.5
+ * @version 0.7
  * @since 0.4
  */
 public final class Executor {
@@ -32,7 +33,7 @@ public final class Executor {
      * @param engine the storage engine
      * @throws IllegalArgumentException if {@code engine} is {@code null}
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     public Executor(StorageEngine engine) {
         if (engine == null) {
@@ -54,8 +55,9 @@ public final class Executor {
      * @throws IllegalArgumentException if {@code statements} or {@code rowsOut} is {@code null}, or
      *                                  a statement fails catalog or API validation
      * @throws java.io.UncheckedIOException if storage I/O fails
+     * @throws ArithmeticException if a changing statement would overflow its table version
      * @since 0.4
-     * @version 0.5
+     * @version 0.7
      */
     public void execute(List<Statement> statements, PrintStream rowsOut) {
         if (statements == null) {
@@ -72,26 +74,47 @@ public final class Executor {
             int rows = 0;
             String kind;
             String table;
-            binder.bind(statement);
+            var snapshot = switch (statement) {
+                case CreateTableStatement ignored -> null;
+                case CopyStatement copy -> engine.requireTable(copy.tableName());
+                case SelectStatement select -> engine.requireTable(select.tableName());
+                case DeleteStatement delete -> engine.requireTable(delete.tableName());
+            };
+            binder.bind(statement, snapshot);
+            long version;
             switch (statement) {
                 case CreateTableStatement create -> {
                     kind = "CREATE_TABLE";
                     table = create.tableName();
                     engine.createTable(create.tableName(), create.columns());
+                    version = 0;
                 }
                 case CopyStatement copy -> {
                     kind = "COPY";
                     table = copy.tableName();
-                    engine.copyFile(copy.tableName(), copy.csvFilePath());
+                    engine.copyFile(snapshot, copy.csvFilePath());
+                    version = Math.incrementExact(snapshot.current().tableVersion());
                 }
                 case SelectStatement select -> {
                     kind = "SELECT";
                     table = select.tableName();
-                    rows = executeSelect(select, rowsOut);
+                    rows = executeSelect(select, snapshot, rowsOut);
+                    version = snapshot.current().tableVersion();
+                }
+                case DeleteStatement delete -> {
+                    kind = "DELETE";
+                    table = delete.tableName();
+                    var result = engine.delete(snapshot, delete.where());
+                    version = result.version();
+                    LOGGER.debug("statement=DELETE table={} rowsDeleted={} partitionsRewritten={} partitionsCarried={} partitionsRemoved={} version={} durationMs={}",
+                            StorageEngine.clean(table), result.rowsDeleted(), result.partitionsRewritten(),
+                            result.partitionsCarried(), result.partitionsRemoved(), version,
+                            (System.nanoTime() - start) / 1_000_000);
+                    continue;
                 }
             }
-            LOGGER.debug("statement={} table={} rowsOut={} durationMs={}",
-                    kind, StorageEngine.clean(table), rows, (System.nanoTime() - start) / 1_000_000);
+            LOGGER.debug("statement={} table={} rowsOut={} version={} durationMs={}",
+                    kind, StorageEngine.clean(table), rows, version, (System.nanoTime() - start) / 1_000_000);
         }
     }
 
@@ -99,11 +122,12 @@ public final class Executor {
      * Plans and drains a select pipeline, logging partition counts and writing rows as CSV.
      *
      * @param statement the select statement
+     * @param snapshot the table metadata captured before binding
      * @param rowsOut the CSV destination
      * @return the number of emitted rows
      */
-    private int executeSelect(SelectStatement statement, PrintStream rowsOut) {
-        var plan = planner.plan(statement);
+    private int executeSelect(SelectStatement statement, CatalogStore.Table snapshot, PrintStream rowsOut) {
+        var plan = planner.plan(statement, snapshot);
         LOGGER.debug("table={} partitionsTotal={} partitionsRead={} partitionsPruned={}",
                 StorageEngine.clean(statement.tableName()), plan.stats().partitionsTotal(),
                 plan.stats().partitionsRead(), plan.stats().partitionsPruned());
