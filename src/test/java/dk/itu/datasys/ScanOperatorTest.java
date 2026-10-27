@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dk.itu.datasys.ScanOperator.PartitionRef;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -45,9 +46,9 @@ class ScanOperatorTest {
     @Test
     void summarizesRowsBeforeFilteringAndOnlyHandedPartitions() throws Exception {
         var engine = loadedEngine();
-        var partitions = engine.requireTable("trips").files().getFirst().partitions();
+        var partitions = references(engine);
         Path dataFile = engine.publishedDataFile("trips");
-        var scan = new ScanOperator(dataFile, schema,
+        var scan = new ScanOperator(schema,
                 List.of(partitions.getFirst(), partitions.getLast()));
         var filtered = new FilterOperator(scan, 1, ColumnType.LONG, Comparison.GREATER_THAN, 100L);
 
@@ -61,9 +62,9 @@ class ScanOperatorTest {
     @Test
     void summarizesEarlyCloseOnceAndResetsCountersOnReopen() throws Exception {
         var engine = loadedEngine();
-        var partitions = engine.requireTable("trips").files().getFirst().partitions();
+        var partitions = references(engine);
         Path dataFile = engine.publishedDataFile("trips");
-        var scan = new ScanOperator(dataFile, schema, partitions);
+        var scan = new ScanOperator(schema, partitions);
         scan.close();
         assertTrue(scanRecords().isEmpty());
         scan.open();
@@ -86,10 +87,10 @@ class ScanOperatorTest {
     @Test
     void summarizesFailedOpenWithoutClaimingPartitionsRead() throws Exception {
         var engine = loadedEngine();
-        var partitions = engine.requireTable("trips").files().getFirst().partitions();
+        var partitions = references(engine);
         Path dataFile = engine.publishedDataFile("trips");
         Files.writeString(dataFile, "invalid");
-        var scan = new ScanOperator(dataFile, schema, partitions);
+        var scan = new ScanOperator(schema, partitions);
         try {
             assertThrows(UncheckedIOException.class, scan::open);
         } finally {
@@ -104,12 +105,12 @@ class ScanOperatorTest {
     @Test
     void summarizesProgressBeforeAChunkReadFails() throws Exception {
         var engine = loadedEngine();
-        var partitions = engine.requireTable("trips").files().getFirst().partitions();
+        var partitions = references(engine);
         Path dataFile = engine.publishedDataFile("trips");
-        try (var file = new RandomAccessFile(dataFile.toFile(), "rw")) {
-            file.setLength(partitions.get(1).chunks().getFirst().offset());
+        try (var file = new RandomAccessFile(partitions.get(1).path().toFile(), "rw")) {
+            file.setLength(partitions.get(1).partition().chunks().getFirst().offset());
         }
-        var scan = new ScanOperator(dataFile, schema, partitions);
+        var scan = new ScanOperator(schema, partitions);
         scan.open();
         try {
             assertEquals(12L, scan.next()[1]);
@@ -128,14 +129,12 @@ class ScanOperatorTest {
         var engine = new StorageEngine(dir, 2);
         engine.createTable("trips", schema);
         engine.copyFile("trips", "src/test/resources/trips.csv");
-        var table = engine.requireTable("trips");
-        var partitions = table.files().getFirst().partitions();
-        var dataFile = engine.publishedDataFile("trips");
+        var partitions = references(engine);
 
-        var first = drain(new ScanOperator(dataFile, schema, List.of(partitions.getFirst())));
+        var first = drain(new ScanOperator(schema, List.of(partitions.getFirst())));
         assertEquals(List.of(12L, 187L), first.stream().map(row -> row[1]).toList());
 
-        var last = drain(new ScanOperator(dataFile, schema, List.of(partitions.getLast())));
+        var last = drain(new ScanOperator(schema, List.of(partitions.getLast())));
         assertEquals(List.of(88L, 299L), last.stream().map(row -> row[1]).toList());
     }
 
@@ -151,6 +150,17 @@ class ScanOperatorTest {
         var records = scanRecords();
         assertEquals(1, records.size());
         assertSummary(records.getFirst(), dataFile, 0, 0);
+    }
+
+    /**
+     * Preserves file identity while collecting partitions in logical order.
+     *
+     * @param engine the loaded storage engine
+     * @return the captured references
+     */
+    private List<PartitionRef> references(StorageEngine engine) {
+        return engine.requireTable("trips").files().stream().flatMap(file -> file.partitions().stream()
+                .map(partition -> new PartitionRef(engine.dataPath(file.path()), partition))).toList();
     }
 
     private StorageEngine loadedEngine() {

@@ -1,5 +1,11 @@
 # Storage Design
 
+This document records the Part 1 storage design through Exercise 6. Exercise 7
+supersedes its one-copy restriction, fixed data filename, catalog format and
+non-atomic publication fallback: see [transaction design](transaction-design.md).
+Binary encoding remains format 1; new catalogs use format 2 with current and
+previous versions and one uniquely named file per new partition.
+
 1. **Catalog storage:** one catalog file or one per table? Which format: JSON,
    Java properties, or your own binary? Where on disk relative to the data
    directory?

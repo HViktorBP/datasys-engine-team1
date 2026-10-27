@@ -1,10 +1,13 @@
 package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.itu.datasys.CatalogStore.Partition;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.stream.LongStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -102,21 +105,20 @@ class StorageEngineIT {
         assertThrows(IllegalArgumentException.class, () -> e.createTable("empty", List.of()));
         assertThrows(IllegalArgumentException.class, () -> e.createTable("duplicates", List.of(schema.getFirst(),schema.getFirst())));
         assertThrows(IllegalArgumentException.class, () -> e.copyFile("missing", "missing.csv"));
-        assertThrows(UnsupportedOperationException.class, () -> new StorageEngine(dir).copyFile("trips", "src/test/resources/trips.csv"));
+        assertThrows(IllegalArgumentException.class, () -> e.copyFile("trips", null));
     }
 
     @Test void persistsPartitionOffsetsAndCanonicalStatistics() throws Exception {
         golden();
         var catalog = new ObjectMapper().readTree(onlyFile("catalog").toFile());
-        assertEquals(1, catalog.get("version").asInt());
-        var files = catalog.get("files");
-        assertEquals(1, files.size());
-        var partitions = files.get(0).get("partitions");
-        assertEquals(4, partitions.size());
-        long end = 8;
+        assertEquals(2, catalog.get("version").asInt());
+        var files = catalog.get("current").get("files");
+        assertEquals(4, files.size());
         String[][] ranges = {{"12","187"},{"95","140"},{"31","210"},{"88","299"}};
         for (int p = 0; p < 4; p++) {
-            var partition = partitions.get(p);
+            assertEquals(1, files.get(p).get("partitions").size());
+            var partition = files.get(p).get("partitions").get(0);
+            long end = 8;
             assertEquals(2, partition.get("rowCount").asInt());
             var chunks = partition.get("chunks");
             assertEquals(ranges[p][0], chunks.get(1).get("statistics").get("min").asText());
@@ -125,8 +127,8 @@ class StorageEngineIT {
                 assertEquals(end, chunk.get("offset").asLong());
                 end += chunk.get("length").asLong();
             }
+            assertEquals(Files.size(dir.resolve(files.get(p).get("path").asText())), end);
         }
-        assertEquals(Files.size(onlyFile("data")), end);
     }
 
     @Test void sortedScanPrunesThreePartitionsAndPrunedScanNeverOpensData() throws Exception {
@@ -163,18 +165,19 @@ class StorageEngineIT {
         e.createTable("empty",schema); Files.writeString(csv, ""); e.copyFile("empty",csv.toString());
         assertTrue(select(e, "empty","city",Comparison.EQUALS,"").isEmpty());
         assertEquals(new ScanStats(0,0,0),lastPlanStats);
-        assertThrows(UnsupportedOperationException.class, () -> e.copyFile("empty",csv.toString()));
+        e.copyFile("empty",csv.toString());
+        assertEquals(2, e.requireTable("empty").current().tableVersion());
     }
 
     @Test void rejectsCorruptData() throws Exception {
         var e = golden(); distances(e,"distance",Comparison.GREATER_THAN,1000L);
-        try (var f = new RandomAccessFile(onlyFile("data").toFile(),"rw")) { f.writeInt(0); }
+        try (var f = new RandomAccessFile(e.publishedDataFile("trips").toFile(),"rw")) { f.writeInt(0); }
         assertThrows(UncheckedIOException.class, () -> distances(e,"distance",Comparison.GREATER_THAN,0L));
     }
 
     @Test void rejectsUnsupportedCatalogVersions() throws Exception {
         golden(); Path catalog = onlyFile("catalog");
-        Files.writeString(catalog,Files.readString(catalog).replace("\"version\" : 1", "\"version\" : 999"));
+        Files.writeString(catalog,Files.readString(catalog).replace("\"version\" : 2", "\"version\" : 999"));
         assertThrows(UncheckedIOException.class, () -> new StorageEngine(dir));
     }
     @Test void exposesOrderedReadOnlySchemaAndRejectsUnknownTables() {
@@ -244,11 +247,11 @@ class StorageEngineIT {
         Files.writeString(boundaryCsv, input);
         e.copyFile("trips", boundaryCsv.toString());
         var reopened = new StorageEngine(dir, 2);
-        assertEquals(java.util.stream.LongStream.rangeClosed(0, 1000).boxed().toList(),
+        assertEquals(LongStream.rangeClosed(0, 1000).boxed().toList(),
                 distances(reopened, "distance", Comparison.GREATER_THAN, -1L));
         assertEquals(new ScanStats(2,2,0), lastPlanStats);
-        assertEquals(List.of(1000, 1), reopened.requireTable("trips").files().getFirst()
-                .partitions().stream().map(CatalogStore.Partition::rowCount).toList());
+        assertEquals(List.of(1000, 1), reopened.requireTable("trips").files().stream()
+                .flatMap(file -> file.partitions().stream()).map(Partition::rowCount).toList());
         e.createTable("strings",List.of(new ColumnSpec("id",ColumnType.LONG),new ColumnSpec("text",ColumnType.STRING)));
         Path csv = dir.resolve("empty-string.csv"); Files.writeString(csv,"1,\n"); e.copyFile("strings",csv.toString());
         assertArrayEquals(new Object[]{1L,""},select(new StorageEngine(dir), "strings","text",Comparison.EQUALS,"").getFirst());

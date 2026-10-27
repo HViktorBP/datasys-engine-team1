@@ -47,9 +47,23 @@ removed the test-only `StorageEngine.select` materializing API, its scan-statist
 getter, and `SqlPrinter`. `QueryPlan.stats()` and planner `decision=` records
 describe partition activity.
 
-Use one writer engine per directory; reopen it to reload catalogs written by
-another instance. Part 1 supports one successful copy per table. Generated state
-belongs under the Git-ignored `data/` directory. See the
+Use one engine per directory and execute statements sequentially, consuming and
+closing each query before the next statement. Repeated `COPY` appends rows;
+`DELETE FROM trips WHERE distance > 100` removes matches through partition rewrites,
+and `DELETE FROM trips` empties the table without decoding data. Each statement
+commits independently. CREATE starts at table version 0, COPY always increments
+it (including empty input), and DELETE increments it only when rows are removed.
+SELECT reads a snapshot captured before binding. Statement summaries log `version`.
+
+Catalog format 2 retains current and previous committed states across restart.
+Older catalogs are unsupported; use a fresh data directory for this release.
+Atomic catalog replacement supports recovery from Java process crashes while
+the OS stays running. OS crashes, power loss, concurrent statements and multiple
+engines on one directory are outside the supported contract. Cleanup preserves
+files referenced by either retained version and retries failures on later commits
+or startup. Generated state belongs under the Git-ignored `data/` directory. See the
+[transaction design](docs/transaction-design.md),
+[Exercise 7 release notes](docs/exercise-7.md),
 [storage design](docs/storage-design.md),
 [debugger walkthrough and release checklist](docs/exercise-5.md), and
 [experiment design](docs/experiment-design.md).

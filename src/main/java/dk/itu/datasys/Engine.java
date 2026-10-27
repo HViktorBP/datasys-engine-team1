@@ -5,6 +5,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -139,7 +140,7 @@ public final class Engine {
      * @param err the error stream
      * @return the statements, or {@code null} when parsing failed
      */
-    private static java.util.List<Statement> parseScript(String sql, PrintStream err) {
+    private static List<Statement> parseScript(String sql, PrintStream err) {
         try {
             return new SqlParser().parse(sql);
         } catch (SqlParseException error) {

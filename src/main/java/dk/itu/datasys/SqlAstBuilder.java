@@ -3,6 +3,7 @@ package dk.itu.datasys;
 import dk.itu.datasys.sql.SqlBaseVisitor;
 import dk.itu.datasys.sql.SqlParser.ColumnDefContext;
 import dk.itu.datasys.sql.SqlParser.CopyContext;
+import dk.itu.datasys.sql.SqlParser.DeleteContext;
 import dk.itu.datasys.sql.SqlParser.CreateTableContext;
 import dk.itu.datasys.sql.SqlParser.LiteralContext;
 import dk.itu.datasys.sql.SqlParser.PredicateContext;
@@ -13,7 +14,13 @@ import java.util.Locale;
 import java.util.Optional;
 import org.antlr.v4.runtime.Token;
 
-/** Converts ANTLR parse trees into the engine's immutable SQL statement model. */
+/**
+ * Converts ANTLR parse trees into the engine's immutable SQL statement model.
+ *
+ * @author Team 1
+ * @since 0.3
+ * @version 0.7
+ */
 final class SqlAstBuilder extends SqlBaseVisitor<Object> {
     /** Creates an abstract syntax tree builder. */
     SqlAstBuilder() { }
@@ -59,6 +66,14 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
                 ? Optional.<Predicate>empty()
                 : Optional.of((Predicate) visit(context.predicate()));
         return new SelectStatement(context.IDENTIFIER().getText(), where);
+    }
+
+    /** {@inheritDoc} */
+    @Override public Object visitDelete(DeleteContext context) {
+        var where = context.predicate() == null
+                ? Optional.<Predicate>empty()
+                : Optional.of((Predicate) visit(context.predicate()));
+        return new DeleteStatement(context.IDENTIFIER().getText(), where);
     }
 
     /** {@inheritDoc} */

@@ -3,7 +3,7 @@ grammar Sql;
 options { caseInsensitive = true; }
 
 script      : (statement ';')+ EOF ;
-statement   : createTable | copy | select ;
+statement   : createTable | copy | select | delete ;
 
 createTable : CREATE TABLE IDENTIFIER '(' columnDef (',' columnDef)* ')' ;
 columnDef   : IDENTIFIER columnType ;
@@ -12,6 +12,7 @@ columnType  : STRING | LONG | DOUBLE ;
 copy        : COPY IDENTIFIER FROM STRING_LITERAL ;
 
 select      : SELECT '*' FROM IDENTIFIER (WHERE predicate)? ;
+delete      : DELETE FROM IDENTIFIER (WHERE predicate)? ;
 predicate   : IDENTIFIER comparison=('=' | '<' | '>') literal ;
 literal     : STRING_LITERAL | LONG_LITERAL | DOUBLE_LITERAL ;
 
@@ -21,6 +22,7 @@ COPY   : 'COPY' ;
 FROM   : 'FROM' ;
 SELECT : 'SELECT' ;
 WHERE  : 'WHERE' ;
+DELETE : 'DELETE' ;
 STRING : 'STRING' ;
 LONG   : 'LONG' ;
 DOUBLE : 'DOUBLE' ;

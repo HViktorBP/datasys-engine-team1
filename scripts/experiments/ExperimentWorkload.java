@@ -3,6 +3,7 @@ import dk.itu.datasys.Executor;
 import dk.itu.datasys.SqlParser;
 import dk.itu.datasys.Statement;
 import dk.itu.datasys.StorageEngine;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,7 +43,7 @@ public final class ExperimentWorkload {
      *
      * @param args the workload, positive partition size, database directory, and optional CSV path
      * @throws IllegalArgumentException if the arguments or engine inputs are invalid
-     * @throws java.io.UncheckedIOException if storage initialization or execution fails
+     * @throws UncheckedIOException if storage initialization or execution fails
      * @since 0.6
      * @version 0.6
      */
