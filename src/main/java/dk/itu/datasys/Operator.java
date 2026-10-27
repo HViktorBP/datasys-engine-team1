@@ -1,5 +1,7 @@
 package dk.itu.datasys;
 
+import java.io.UncheckedIOException;
+
 /**
  * Pulls rows from a Volcano-style execution pipeline.
  *
@@ -15,7 +17,7 @@ public interface Operator {
     /**
      * Prepares this operator to produce rows.
      *
-     * @throws java.io.UncheckedIOException if a storage-backed operator cannot open its inputs
+     * @throws UncheckedIOException if a storage-backed operator cannot open its inputs
      */
     void open();
 
@@ -23,7 +25,7 @@ public interface Operator {
      * Returns the next row in schema column order, or {@code null} when the operator is exhausted.
      *
      * @return the next row, or {@code null} when no rows remain
-     * @throws java.io.UncheckedIOException if a storage-backed operator cannot read the next row
+     * @throws UncheckedIOException if a storage-backed operator cannot read the next row
      */
     Object[] next();
 

@@ -1,5 +1,6 @@
 package dk.itu.datasys;
 
+import dk.itu.datasys.CatalogStore.Partition;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
@@ -60,7 +61,7 @@ public final class ScanOperator implements Operator {
      * @since 0.4
      * @version 0.7
      */
-    ScanOperator(Path dataFile, List<ColumnSpec> columns, List<CatalogStore.Partition> partitions) {
+    ScanOperator(Path dataFile, List<ColumnSpec> columns, List<Partition> partitions) {
         this.dataFile = dataFile;
         this.columns = List.copyOf(columns);
         this.partitions = partitions.stream().map(p -> new PartitionRef(dataFile, p)).toList();
@@ -74,7 +75,7 @@ public final class ScanOperator implements Operator {
      * @since 0.7
      * @version 0.7
      */
-    record PartitionRef(Path path, CatalogStore.Partition partition) { }
+    record PartitionRef(Path path, Partition partition) { }
 
     /**
      * Creates a scan retaining file identity and logical order across all partitions.

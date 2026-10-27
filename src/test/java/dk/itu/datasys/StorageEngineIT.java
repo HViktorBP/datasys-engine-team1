@@ -1,10 +1,13 @@
 package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.itu.datasys.CatalogStore.Partition;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.stream.LongStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -244,11 +247,11 @@ class StorageEngineIT {
         Files.writeString(boundaryCsv, input);
         e.copyFile("trips", boundaryCsv.toString());
         var reopened = new StorageEngine(dir, 2);
-        assertEquals(java.util.stream.LongStream.rangeClosed(0, 1000).boxed().toList(),
+        assertEquals(LongStream.rangeClosed(0, 1000).boxed().toList(),
                 distances(reopened, "distance", Comparison.GREATER_THAN, -1L));
         assertEquals(new ScanStats(2,2,0), lastPlanStats);
         assertEquals(List.of(1000, 1), reopened.requireTable("trips").files().stream()
-                .flatMap(file -> file.partitions().stream()).map(CatalogStore.Partition::rowCount).toList());
+                .flatMap(file -> file.partitions().stream()).map(Partition::rowCount).toList());
         e.createTable("strings",List.of(new ColumnSpec("id",ColumnType.LONG),new ColumnSpec("text",ColumnType.STRING)));
         Path csv = dir.resolve("empty-string.csv"); Files.writeString(csv,"1,\n"); e.copyFile("strings",csv.toString());
         assertArrayEquals(new Object[]{1L,""},select(new StorageEngine(dir), "strings","text",Comparison.EQUALS,"").getFirst());

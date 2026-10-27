@@ -3,8 +3,8 @@
  * Team 1 query engine.
  *
  * <p>SQL text is parsed, bound, planned, and executed. {@code SELECT} runs on a
- * {@link dk.itu.datasys.ScanOperator scan} and optional {@link dk.itu.datasys.FilterOperator
- * filter}. Persistent operations are exposed through {@link dk.itu.datasys.StorageEngine}.
+ * {@link ScanOperator scan} and optional {@link FilterOperator
+ * filter}. Persistent operations are exposed through {@link StorageEngine}.
  *
  * @since 0.1
  */

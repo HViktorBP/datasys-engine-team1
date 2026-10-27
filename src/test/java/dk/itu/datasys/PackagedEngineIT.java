@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -98,24 +99,30 @@ class PackagedEngineIT {
                 CREATE TABLE tx (id LONG, city STRING, price DOUBLE);
                 COPY tx FROM 'first.csv';
                 COPY tx FROM 'second.csv';
-                DELETE FROM tx WHERE id > 3;
+                DELETE FROM tx WHERE id < 3;
                 SELECT * FROM tx;
                 """);
-        String expected = "1,A,1.0\n2,B,2.0\n3,C,3.0\n";
+        String expected = "3,C,3.0\n4,D,4.0\n5,E,5.0\n6,F,6.0\n";
         assertEquals(expected, launch("-f", "transactions.sql"));
         var logs = Files.readAllLines(dir.resolve("logs/engine.log"));
         for (String summary : List.of("statement=CREATE_TABLE table=tx rowsOut=0 version=0",
                 "statement=COPY table=tx rowsOut=0 version=1", "statement=COPY table=tx rowsOut=0 version=2",
-                "statement=SELECT table=tx rowsOut=3 version=3")) {
+                "statement=SELECT table=tx rowsOut=4 version=3")) {
             assertTrue(logs.stream().anyMatch(line -> line.contains(summary)), summary);
         }
-        assertTrue(logs.stream().anyMatch(line -> line.contains("statement=DELETE table=tx rowsDeleted=3")
-                && line.contains("version=3")));
+        assertTrue(logs.stream().anyMatch(line -> line.contains("statement=DELETE table=tx rowsDeleted=2 "
+                + "partitionsRewritten=1 partitionsCarried=1 partitionsRemoved=0 version=3")));
+        var summaries = logs.stream().map(line -> line.split(",", -1))
+                .filter(fields -> fields[5].equals("Executor") && fields[6].startsWith("statement="))
+                .toList();
+        assertEquals(List.of("1", "2", "3", "4", "5"),
+                summaries.stream().map(fields -> fields[2]).toList());
+        assertTrue(summaries.stream().allMatch(fields -> fields[6].matches(".* durationMs=\\d+")));
         assertTrue(logs.stream().allMatch(line -> line.split(",", -1).length == 7));
         assertEquals(expected, launch("-c", "SELECT * FROM tx"));
         assertEquals("", launch("-c", "DELETE FROM tx WHERE id = 99"));
         assertTrue(Files.readString(dir.resolve("logs/engine.log"))
-                .contains("statement=DELETE table=tx rowsDeleted=0 partitionsRewritten=0 partitionsCarried=1 partitionsRemoved=0 version=3"));
+                .contains("statement=DELETE table=tx rowsDeleted=0 partitionsRewritten=0 partitionsCarried=2 partitionsRemoved=0 version=3"));
     }
 
     @Test
@@ -155,7 +162,7 @@ class PackagedEngineIT {
      */
     private String launch(int expectedExit, String... args) throws Exception {
         Path launcher = Path.of("engine").toAbsolutePath();
-        var command = new java.util.ArrayList<>(List.of(launcher.toString()));
+        var command = new ArrayList<>(List.of(launcher.toString()));
         command.addAll(List.of(args));
         Path stdout = dir.resolve("stdout.txt");
         var builder = new ProcessBuilder(command).directory(dir.toFile())

@@ -8,8 +8,10 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.MDC;
 
 class EngineIT {
     @TempDir Path dir;
@@ -41,7 +43,7 @@ class EngineIT {
 
     @Test
     void bindingFailureIsLoggedWithSessionAndStatementNumber() throws Exception {
-        String marker = "missing_" + java.util.UUID.randomUUID().toString().replace("-", "");
+        String marker = "missing_" + UUID.randomUUID().toString().replace("-", "");
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
         Engine.run(new String[]{"CREATE TABLE present (id LONG); SELECT * FROM " + marker + ";"},
@@ -54,8 +56,8 @@ class EngineIT {
                         && fields[6].contains(marker)).toList();
         assertEquals(1, failures.size());
         assertEquals("2", failures.getFirst()[2]);
-        java.util.UUID.fromString(failures.getFirst()[1]);
-        assertEquals(null, org.slf4j.MDC.get("sessionId"));
-        assertEquals(null, org.slf4j.MDC.get("statementNumber"));
+        UUID.fromString(failures.getFirst()[1]);
+        assertEquals(null, MDC.get("sessionId"));
+        assertEquals(null, MDC.get("statementNumber"));
     }
 }

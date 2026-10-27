@@ -1,6 +1,9 @@
 package dk.itu.datasys;
 
+import dk.itu.datasys.CatalogStore.Table;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * Performs the statement-specific semantic checks required before query planning.
@@ -63,7 +66,7 @@ public final class Binder {
      * @since 0.7
      * @version 0.7
      */
-    void bind(Statement statement, CatalogStore.Table snapshot) {
+    void bind(Statement statement, Table snapshot) {
         if (statement == null) throw new IllegalArgumentException("statement is required");
         switch (statement) {
             case CreateTableStatement create -> bindCreate(create);
@@ -98,7 +101,7 @@ public final class Binder {
      * @param where the optional typed comparison
      * @throws IllegalArgumentException if the column is unknown or its constant has the wrong type
      */
-    private void bindPredicate(java.util.List<ColumnSpec> schema, java.util.Optional<Predicate> where) {
+    private void bindPredicate(List<ColumnSpec> schema, Optional<Predicate> where) {
         if (where.isEmpty()) return;
         var predicate = where.orElseThrow();
         var column = schema.stream()

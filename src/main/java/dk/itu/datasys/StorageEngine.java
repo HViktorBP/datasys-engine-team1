@@ -1,5 +1,10 @@
 package dk.itu.datasys;
 
+import dk.itu.datasys.CatalogStore.Chunk;
+import dk.itu.datasys.CatalogStore.DataFile;
+import dk.itu.datasys.CatalogStore.Partition;
+import dk.itu.datasys.CatalogStore.Snapshot;
+import dk.itu.datasys.CatalogStore.Table;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -29,7 +34,7 @@ public final class StorageEngine {
     /** Catalog persistence helper for the storage root. */
     private final CatalogStore catalogs;
     /** Current immutable table snapshots indexed by logical name. */
-    private final Map<String, CatalogStore.Table> tables;
+    private final Map<String, Table> tables;
     /** Positive maximum number of rows written to each partition. */
     private final int maxRowsPerPartition;
 
@@ -102,8 +107,8 @@ public final class StorageEngine {
         try {
             CatalogStore.validateSchema(tableName, columns);
             if (tables.containsKey(tableName)) throw new IllegalArgumentException("Table already exists: " + tableName);
-            var table = new CatalogStore.Table(2, UUID.randomUUID().toString(), tableName, columns,
-                    new CatalogStore.Snapshot(0, List.of()), null);
+            var table = new Table(2, UUID.randomUUID().toString(), tableName, columns,
+                    new Snapshot(0, List.of()), null);
             catalogs.save(table);
             tables.put(tableName, table);
             success = true;
@@ -144,7 +149,7 @@ public final class StorageEngine {
      * @throws UncheckedIOException if copying or publication fails
      * @since 0.7
      */
-    synchronized void copyFile(CatalogStore.Table base, String csvFilePath) {
+    synchronized void copyFile(Table base, String csvFilePath) {
         long start = startCall();
         long rowCount = 0;
         int partitionCount = 0;
@@ -153,7 +158,7 @@ public final class StorageEngine {
         long version = Math.incrementExact(base.current().tableVersion());
         try {
             if (csvFilePath == null) throw new IllegalArgumentException("CSV path is required");
-            List<CatalogStore.DataFile> files = new ArrayList<>(base.files());
+            List<DataFile> files = new ArrayList<>(base.files());
             try (var input = new BufferedReader(new InputStreamReader(
                     new SnapshotInputStream(Path.of(csvFilePath)), StandardCharsets.UTF_8))) {
                 List<Object[]> rows = new ArrayList<>();
@@ -227,7 +232,7 @@ public final class StorageEngine {
      * @throws UncheckedIOException if data access or publication fails
      * @since 0.7
      */
-    synchronized DeleteResult delete(CatalogStore.Table base, Optional<Predicate> where) {
+    synchronized DeleteResult delete(Table base, Optional<Predicate> where) {
         long start = startCall();
         long deleted = 0;
         int rewritten = 0;
@@ -235,7 +240,7 @@ public final class StorageEngine {
         int removed = 0;
         boolean committed = false;
         List<Path> staged = new ArrayList<>();
-        List<CatalogStore.DataFile> candidate = new ArrayList<>();
+        List<DataFile> candidate = new ArrayList<>();
         int index = where.isPresent() ? Planner.columnIndex(base.columns(), where.orElseThrow().columnName()) : -1;
         try {
             for (var file : base.files()) {
@@ -249,7 +254,7 @@ public final class StorageEngine {
                     var type = base.columns().get(index).type();
                     if (PartitionPruner.canPrune(type, partition.chunks().get(index).statistics(),
                             predicate.comparison(), predicate.constant())) {
-                        candidate.add(new CatalogStore.DataFile(file.path(), List.of(partition)));
+                        candidate.add(new DataFile(file.path(), List.of(partition)));
                         carried++;
                         continue;
                     }
@@ -268,7 +273,7 @@ public final class StorageEngine {
                     }
                     int matches = partition.rowCount() - survivors.size();
                     if (matches == 0) {
-                        candidate.add(new CatalogStore.DataFile(file.path(), List.of(partition)));
+                        candidate.add(new DataFile(file.path(), List.of(partition)));
                         carried++;
                     } else {
                         // Check before staging any replacement for an overflowing version.
@@ -306,18 +311,18 @@ public final class StorageEngine {
      * @return the completed partition reference
      * @throws IOException if creating or writing the file fails
      */
-    private CatalogStore.DataFile stagePartition(CatalogStore.Table table, List<Object[]> rows,
+    private DataFile stagePartition(Table table, List<Object[]> rows,
                                                  int index, List<Path> staged) throws IOException {
         String relative = "data/" + table.id() + "-" + UUID.randomUUID() + ".bin";
         Path path = catalogs.dataPath(relative);
         Files.createFile(path);
         staged.add(path);
-        CatalogStore.Partition partition;
+        Partition partition;
         try (var output = new RandomAccessFile(path.toFile(), "rw")) {
             BinaryColumnCodec.writeHeader(output);
             partition = writePartition(output, table, rows, index);
         }
-        return new CatalogStore.DataFile(relative, List.of(partition));
+        return new DataFile(relative, List.of(partition));
     }
 
     /**
@@ -328,9 +333,9 @@ public final class StorageEngine {
      * @param version the checked next version
      * @throws IOException if catalog validation or publication fails
      */
-    private void commit(CatalogStore.Table base, List<CatalogStore.DataFile> files, long version) throws IOException {
-        var replacement = new CatalogStore.Table(2, base.id(), base.name(), base.columns(),
-                new CatalogStore.Snapshot(version, files), base.current());
+    private void commit(Table base, List<DataFile> files, long version) throws IOException {
+        var replacement = new Table(2, base.id(), base.name(), base.columns(),
+                new Snapshot(version, files), base.current());
         catalogs.save(replacement);
         tables.put(base.name(), replacement);
     }
@@ -358,9 +363,9 @@ public final class StorageEngine {
      * @return metadata describing the written partition
      * @throws IOException if a column value cannot be written
      */
-    private CatalogStore.Partition writePartition(RandomAccessFile output, CatalogStore.Table table,
+    private Partition writePartition(RandomAccessFile output, Table table,
                                                    List<Object[]> rows, int partitionIndex) throws IOException {
-        List<CatalogStore.Chunk> chunks = new ArrayList<>();
+        List<Chunk> chunks = new ArrayList<>();
         for (int column = 0; column < table.columns().size(); column++) {
             ColumnSpec spec = table.columns().get(column);
             List<Object> values = new ArrayList<>(rows.size());
@@ -372,9 +377,9 @@ public final class StorageEngine {
             PartitionStatistics statistics = PartitionStatistics.compute(spec.type(), values);
             LOGGER.debug("table={} partition={} column={} min={} max={}", clean(table.name()), partitionIndex,
                     clean(spec.name()), clean(statistics.min()), clean(statistics.max()));
-            chunks.add(new CatalogStore.Chunk(offset, output.getFilePointer() - offset, statistics));
+            chunks.add(new Chunk(offset, output.getFilePointer() - offset, statistics));
         }
-        return new CatalogStore.Partition(rows.size(), List.copyOf(chunks));
+        return new Partition(rows.size(), List.copyOf(chunks));
     }
 
     /**
@@ -385,7 +390,7 @@ public final class StorageEngine {
      * @throws IllegalArgumentException if the table is unknown
      * @since 0.4
      */
-    synchronized CatalogStore.Table requireTable(String name) {
+    synchronized Table requireTable(String name) {
         var table = tables.get(name);
         if (table == null) throw new IllegalArgumentException("Unknown table: " + name);
         return table;

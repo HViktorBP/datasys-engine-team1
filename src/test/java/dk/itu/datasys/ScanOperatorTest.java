@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dk.itu.datasys.ScanOperator.PartitionRef;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -157,9 +158,9 @@ class ScanOperatorTest {
      * @param engine the loaded storage engine
      * @return the captured references
      */
-    private List<ScanOperator.PartitionRef> references(StorageEngine engine) {
+    private List<PartitionRef> references(StorageEngine engine) {
         return engine.requireTable("trips").files().stream().flatMap(file -> file.partitions().stream()
-                .map(partition -> new ScanOperator.PartitionRef(engine.dataPath(file.path()), partition))).toList();
+                .map(partition -> new PartitionRef(engine.dataPath(file.path()), partition))).toList();
     }
 
     private StorageEngine loadedEngine() {

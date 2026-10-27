@@ -1,5 +1,7 @@
 package dk.itu.datasys;
 
+import dk.itu.datasys.CatalogStore.Table;
+import dk.itu.datasys.ScanOperator.PartitionRef;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -63,7 +65,7 @@ public final class Planner {
      * @since 0.7
      * @version 0.7
      */
-    QueryPlan plan(SelectStatement statement, CatalogStore.Table table) {
+    QueryPlan plan(SelectStatement statement, Table table) {
         var columns = table.columns();
         var partitions = allPartitions(table);
         var where = statement.where();
@@ -80,7 +82,7 @@ public final class Planner {
         var predicate = where.orElseThrow();
         int columnIndex = columnIndex(columns, predicate.columnName());
         ColumnType type = columns.get(columnIndex).type();
-        List<ScanOperator.PartitionRef> surviving = new ArrayList<>();
+        List<PartitionRef> surviving = new ArrayList<>();
         int total = 0;
         int pruned = 0;
         for (var partition : partitions) {
@@ -115,11 +117,11 @@ public final class Planner {
      * @param table the table snapshot
      * @return partitions in catalog order
      */
-    private List<ScanOperator.PartitionRef> allPartitions(CatalogStore.Table table) {
-        List<ScanOperator.PartitionRef> partitions = new ArrayList<>();
+    private List<PartitionRef> allPartitions(Table table) {
+        List<PartitionRef> partitions = new ArrayList<>();
         for (var file : table.files()) {
             for (var partition : file.partitions()) {
-                partitions.add(new ScanOperator.PartitionRef(engine.dataPath(file.path()), partition));
+                partitions.add(new PartitionRef(engine.dataPath(file.path()), partition));
             }
         }
         return partitions;

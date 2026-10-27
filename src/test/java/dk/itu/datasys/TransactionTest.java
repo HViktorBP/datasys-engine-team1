@@ -3,8 +3,18 @@ package dk.itu.datasys;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import dk.itu.datasys.CatalogStore.Chunk;
+import dk.itu.datasys.CatalogStore.DataFile;
+import dk.itu.datasys.CatalogStore.Partition;
+import dk.itu.datasys.CatalogStore.Snapshot;
+import dk.itu.datasys.CatalogStore.Table;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
@@ -221,7 +231,7 @@ class TransactionTest {
         empty();
         Path catalog;
         try (var paths = Files.list(dir.resolve("catalog"))) { catalog = paths.findFirst().orElseThrow(); }
-        var tree = (com.fasterxml.jackson.databind.node.ObjectNode) new ObjectMapper().readTree(catalog.toFile());
+        var tree = (ObjectNode) new ObjectMapper().readTree(catalog.toFile());
         tree.put("version", 1);
         tree.remove("current");
         tree.remove("previous");
@@ -229,18 +239,18 @@ class TransactionTest {
         Files.writeString(catalog, tree.toString());
         var failure = assertThrows(UncheckedIOException.class, () -> new StorageEngine(dir));
         assertTrue(failure.getCause().getMessage().contains("Unsupported catalog format"));
-        var error = new java.io.ByteArrayOutputStream();
+        var error = new ByteArrayOutputStream();
         assertEquals(1, Engine.run(new String[]{"-c", "SELECT * FROM t"}, dir,
-                new java.io.PrintStream(new java.io.ByteArrayOutputStream()), new java.io.PrintStream(error)));
-        assertTrue(error.toString(java.nio.charset.StandardCharsets.UTF_8).contains("Unsupported catalog format"));
+                new PrintStream(new ByteArrayOutputStream()), new PrintStream(error)));
+        assertTrue(error.toString(StandardCharsets.UTF_8).contains("Unsupported catalog format"));
     }
 
     @Test void versionOverflowFailsBeforePublicationAndLeavesStateIntact() throws Exception {
         var e = empty();
         var table = e.requireTable("t");
-        new CatalogStore(dir).save(new CatalogStore.Table(2, table.id(), table.name(), table.columns(),
-                new CatalogStore.Snapshot(Long.MAX_VALUE, List.of()),
-                new CatalogStore.Snapshot(Long.MAX_VALUE - 1, List.of())));
+        new CatalogStore(dir).save(new Table(2, table.id(), table.name(), table.columns(),
+                new Snapshot(Long.MAX_VALUE, List.of()),
+                new Snapshot(Long.MAX_VALUE - 1, List.of())));
         var reopened = new StorageEngine(dir);
         assertThrows(ArithmeticException.class, () -> copy(reopened, "1,A,1.0\n"));
         assertEquals(Long.MAX_VALUE, new StorageEngine(dir).requireTable("t").current().tableVersion());
@@ -264,23 +274,23 @@ class TransactionTest {
         var e = empty();
         var initial = e.requireTable("t");
         String relative = "data/" + initial.id() + "-" + UUID.randomUUID() + ".bin";
-        List<CatalogStore.Partition> partitions = new ArrayList<>();
-        try (var output = new java.io.RandomAccessFile(dir.resolve(relative).toFile(), "rw")) {
+        List<Partition> partitions = new ArrayList<>();
+        try (var output = new RandomAccessFile(dir.resolve(relative).toFile(), "rw")) {
             BinaryColumnCodec.writeHeader(output);
             for (Object[] row : List.of(new Object[]{1L, "A", 1.0}, new Object[]{2L, "B", 2.0})) {
-                List<CatalogStore.Chunk> chunks = new ArrayList<>();
+                List<Chunk> chunks = new ArrayList<>();
                 for (int column = 0; column < schema.size(); column++) {
                     long offset = output.getFilePointer();
                     BinaryColumnCodec.writeValue(output, schema.get(column).type(), row[column]);
-                    chunks.add(new CatalogStore.Chunk(offset, output.getFilePointer() - offset,
+                    chunks.add(new Chunk(offset, output.getFilePointer() - offset,
                             PartitionStatistics.compute(schema.get(column).type(), List.of(row[column]))));
                 }
-                partitions.add(new CatalogStore.Partition(1, chunks));
+                partitions.add(new Partition(1, chunks));
             }
         }
-        var shared = new CatalogStore.DataFile(relative, partitions);
-        new CatalogStore(dir).save(new CatalogStore.Table(2, initial.id(), "t", schema,
-                new CatalogStore.Snapshot(1, List.of(shared)), initial.current()));
+        var shared = new DataFile(relative, partitions);
+        new CatalogStore(dir).save(new Table(2, initial.id(), "t", schema,
+                new Snapshot(1, List.of(shared)), initial.current()));
         e = new StorageEngine(dir, 2);
         assertEquals(List.of(1L, 2L), ids(e));
         e.delete("t", where(1));
@@ -320,14 +330,14 @@ class TransactionTest {
     }
 
     @Test void nestedMetadataDefensivelyCopiesEverySourceList() {
-        var chunks = new ArrayList<>(List.of(new CatalogStore.Chunk(8, 8, new PartitionStatistics("1", "1"))));
-        var partition = new CatalogStore.Partition(1, chunks);
+        var chunks = new ArrayList<>(List.of(new Chunk(8, 8, new PartitionStatistics("1", "1"))));
+        var partition = new Partition(1, chunks);
         chunks.clear();
         var partitions = new ArrayList<>(List.of(partition));
-        var file = new CatalogStore.DataFile("data/test.bin", partitions);
+        var file = new DataFile("data/test.bin", partitions);
         partitions.clear();
         var files = new ArrayList<>(List.of(file));
-        var snapshot = new CatalogStore.Snapshot(1, files);
+        var snapshot = new Snapshot(1, files);
         files.clear();
         assertEquals(1, snapshot.files().getFirst().partitions().getFirst().chunks().size());
         assertThrows(UnsupportedOperationException.class, () -> file.partitions().clear());
@@ -337,9 +347,9 @@ class TransactionTest {
         var e = empty();
         copy(e, "1,A,1.0\n2,B,2.0\n");
         var table = e.requireTable("t");
-        var overflowing = new CatalogStore.Table(2, table.id(), "t", schema,
-                new CatalogStore.Snapshot(Long.MAX_VALUE, table.files()),
-                new CatalogStore.Snapshot(Long.MAX_VALUE - 1, table.files()));
+        var overflowing = new Table(2, table.id(), "t", schema,
+                new Snapshot(Long.MAX_VALUE, table.files()),
+                new Snapshot(Long.MAX_VALUE - 1, table.files()));
         new CatalogStore(dir).save(overflowing);
         var reopened = new StorageEngine(dir);
         assertThrows(ArithmeticException.class, () -> reopened.delete("t", where(1)));

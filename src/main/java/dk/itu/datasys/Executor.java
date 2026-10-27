@@ -1,6 +1,8 @@
 package dk.itu.datasys;
 
+import dk.itu.datasys.CatalogStore.Table;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +56,7 @@ public final class Executor {
      * @param rowsOut the stream that receives {@code SELECT} CSV rows
      * @throws IllegalArgumentException if {@code statements} or {@code rowsOut} is {@code null}, or
      *                                  a statement fails catalog or API validation
-     * @throws java.io.UncheckedIOException if storage I/O fails
+     * @throws UncheckedIOException if storage I/O fails
      * @throws ArithmeticException if a changing statement would overflow its table version
      * @since 0.4
      * @version 0.7
@@ -71,51 +73,69 @@ public final class Executor {
             number++;
             MDC.put("statementNumber", String.valueOf(number));
             long start = System.nanoTime();
-            int rows = 0;
-            String kind;
-            String table;
-            var snapshot = switch (statement) {
-                case CreateTableStatement ignored -> null;
-                case CopyStatement copy -> engine.requireTable(copy.tableName());
-                case SelectStatement select -> engine.requireTable(select.tableName());
-                case DeleteStatement delete -> engine.requireTable(delete.tableName());
-            };
-            binder.bind(statement, snapshot);
-            long version;
-            switch (statement) {
-                case CreateTableStatement create -> {
-                    kind = "CREATE_TABLE";
-                    table = create.tableName();
-                    engine.createTable(create.tableName(), create.columns());
-                    version = 0;
-                }
-                case CopyStatement copy -> {
-                    kind = "COPY";
-                    table = copy.tableName();
-                    engine.copyFile(snapshot, copy.csvFilePath());
-                    version = Math.incrementExact(snapshot.current().tableVersion());
-                }
-                case SelectStatement select -> {
-                    kind = "SELECT";
-                    table = select.tableName();
-                    rows = executeSelect(select, snapshot, rowsOut);
-                    version = snapshot.current().tableVersion();
-                }
-                case DeleteStatement delete -> {
-                    kind = "DELETE";
-                    table = delete.tableName();
-                    var result = engine.delete(snapshot, delete.where());
-                    version = result.version();
-                    LOGGER.debug("statement=DELETE table={} rowsDeleted={} partitionsRewritten={} partitionsCarried={} partitionsRemoved={} version={} durationMs={}",
-                            StorageEngine.clean(table), result.rowsDeleted(), result.partitionsRewritten(),
-                            result.partitionsCarried(), result.partitionsRemoved(), version,
-                            (System.nanoTime() - start) / 1_000_000);
-                    continue;
-                }
-            }
-            LOGGER.debug("statement={} table={} rowsOut={} version={} durationMs={}",
-                    kind, StorageEngine.clean(table), rows, version, (System.nanoTime() - start) / 1_000_000);
+            var summary = execute(statement, rowsOut);
+            LOGGER.debug("statement={} table={} {} version={} durationMs={}",
+                    summary.kind(), StorageEngine.clean(summary.table()), summary.counts(), summary.version(),
+                    (System.nanoTime() - start) / 1_000_000);
         }
+    }
+
+    /**
+     * Describes a successful statement for the shared diagnostic log.
+     *
+     * @param kind the statement kind used in logs
+     * @param table the unsanitized table name
+     * @param version the committed or read table version
+     * @param counts the statement-specific counters as ASCII {@code key=value} pairs
+     * @since 0.7
+     * @version 0.7
+     */
+    private record Summary(String kind, String table, long version, String counts) { }
+
+    /**
+     * Captures metadata, binds and executes one statement, and returns its summary.
+     *
+     * @param statement the statement to bind and execute
+     * @param rowsOut the stream that receives {@code SELECT} CSV rows
+     * @return counters and the resulting version after successful execution
+     * @throws IllegalArgumentException if catalog or API validation fails
+     * @throws UncheckedIOException if storage I/O fails
+     * @throws ArithmeticException if a changing statement would overflow its table version
+     * @since 0.7
+     * @version 0.7
+     */
+    private Summary execute(Statement statement, PrintStream rowsOut) {
+        var snapshot = switch (statement) {
+            case CreateTableStatement ignored -> null;
+            case CopyStatement copy -> engine.requireTable(copy.tableName());
+            case SelectStatement select -> engine.requireTable(select.tableName());
+            case DeleteStatement delete -> engine.requireTable(delete.tableName());
+        };
+        binder.bind(statement, snapshot);
+        return switch (statement) {
+            case CreateTableStatement create -> {
+                engine.createTable(create.tableName(), create.columns());
+                yield new Summary("CREATE_TABLE", create.tableName(), 0, "rowsOut=0");
+            }
+            case CopyStatement copy -> {
+                engine.copyFile(snapshot, copy.csvFilePath());
+                yield new Summary("COPY", copy.tableName(),
+                        Math.incrementExact(snapshot.current().tableVersion()), "rowsOut=0");
+            }
+            case SelectStatement select -> {
+                int rows = executeSelect(select, snapshot, rowsOut);
+                yield new Summary("SELECT", select.tableName(), snapshot.current().tableVersion(),
+                        "rowsOut=" + rows);
+            }
+            case DeleteStatement delete -> {
+                var result = engine.delete(snapshot, delete.where());
+                yield new Summary("DELETE", delete.tableName(), result.version(),
+                        "rowsDeleted=" + result.rowsDeleted()
+                                + " partitionsRewritten=" + result.partitionsRewritten()
+                                + " partitionsCarried=" + result.partitionsCarried()
+                                + " partitionsRemoved=" + result.partitionsRemoved());
+            }
+        };
     }
 
     /**
@@ -126,7 +146,7 @@ public final class Executor {
      * @param rowsOut the CSV destination
      * @return the number of emitted rows
      */
-    private int executeSelect(SelectStatement statement, CatalogStore.Table snapshot, PrintStream rowsOut) {
+    private int executeSelect(SelectStatement statement, Table snapshot, PrintStream rowsOut) {
         var plan = planner.plan(statement, snapshot);
         LOGGER.debug("table={} partitionsTotal={} partitionsRead={} partitionsPruned={}",
                 StorageEngine.clean(statement.tableName()), plan.stats().partitionsTotal(),
