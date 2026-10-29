@@ -31,6 +31,8 @@ import org.slf4j.MDC;
 public final class StorageEngine {
     /** Diagnostic logger for storage operations. */
     private static final Logger LOGGER = LoggerFactory.getLogger(StorageEngine.class);
+    /** Write buffer size for partition files, so most encoded values cost no system call. */
+    private static final int OUTPUT_BUFFER_BYTES = 1 << 16;
     /** Catalog persistence helper for the storage root. */
     private final CatalogStore catalogs;
     /** Current immutable table snapshots indexed by logical name. */
@@ -304,6 +306,9 @@ public final class StorageEngine {
     /**
      * Finishes one uniquely named partition file without replacing any existing file.
      *
+     * <p>The file is written through a buffered stream, because every value written directly
+     * to a {@link RandomAccessFile} would be a separate system call.
+     *
      * @param table the schema and identity
      * @param rows the nonempty typed row buffer
      * @param index the logical index for statistics logging
@@ -318,7 +323,8 @@ public final class StorageEngine {
         Files.createFile(path);
         staged.add(path);
         Partition partition;
-        try (var output = new RandomAccessFile(path.toFile(), "rw")) {
+        try (var output = new DataOutputStream(new BufferedOutputStream(
+                Files.newOutputStream(path, StandardOpenOption.WRITE), OUTPUT_BUFFER_BYTES))) {
             BinaryColumnCodec.writeHeader(output);
             partition = writePartition(output, table, rows, index);
         }
@@ -354,30 +360,37 @@ public final class StorageEngine {
     }
 
     /**
-     * Writes one row partition as consecutive column chunks.
+     * Writes one row partition as consecutive column chunks, directly after the file header.
      *
-     * @param output the destination binary file
+     * <p>Each partition file holds exactly one partition, so its first chunk starts at
+     * {@link BinaryColumnCodec#HEADER_SIZE}. The output is a stream and cannot report its
+     * position, so chunk offsets and lengths are computed from the byte counts returned by
+     * {@link BinaryColumnCodec#writeValue}.
+     *
+     * @param output the buffered destination, positioned directly after the header
      * @param table the destination table metadata
      * @param rows the typed rows to write
      * @param partitionIndex the zero-based partition index used for logging
      * @return metadata describing the written partition
      * @throws IOException if a column value cannot be written
      */
-    private Partition writePartition(RandomAccessFile output, Table table,
+    private Partition writePartition(DataOutput output, Table table,
                                                    List<Object[]> rows, int partitionIndex) throws IOException {
         List<Chunk> chunks = new ArrayList<>();
+        long offset = BinaryColumnCodec.HEADER_SIZE;
         for (int column = 0; column < table.columns().size(); column++) {
             ColumnSpec spec = table.columns().get(column);
             List<Object> values = new ArrayList<>(rows.size());
-            long offset = output.getFilePointer();
+            long length = 0;
             for (Object[] row : rows) {
                 values.add(row[column]);
-                BinaryColumnCodec.writeValue(output, spec.type(), row[column]);
+                length += BinaryColumnCodec.writeValue(output, spec.type(), row[column]);
             }
             PartitionStatistics statistics = PartitionStatistics.compute(spec.type(), values);
             LOGGER.debug("table={} partition={} column={} min={} max={}", clean(table.name()), partitionIndex,
                     clean(spec.name()), clean(statistics.min()), clean(statistics.max()));
-            chunks.add(new Chunk(offset, output.getFilePointer() - offset, statistics));
+            chunks.add(new Chunk(offset, length, statistics));
+            offset += length;
         }
         return new Partition(rows.size(), List.copyOf(chunks));
     }
