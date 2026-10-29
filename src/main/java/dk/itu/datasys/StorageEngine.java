@@ -16,14 +16,22 @@ import org.slf4j.MDC;
 /**
  * Provides persistent, partitioned columnar storage for typed tables.
  *
- * <p>Use exactly one engine per data directory and execute statements sequentially, consuming and
- * closing each query before starting another statement. Synchronized methods do not support
- * overlapping operators or multiple engines on one directory. Each changing statement commits
- * an immutable catalog with current and previous versions. Process-crash recovery is supported
- * while the operating system remains running; power-loss durability is not promised.
+ * <p>Statements may run concurrently within one engine. A changing statement works on the table
+ * version it captured at its start, its base, and writes new partition files without holding a
+ * lock. Only its commit is serialized: the commit validates the base against the version committed
+ * by then and publishes an immutable catalog with current and previous versions. If another
+ * statement committed in between, the change is rebased onto that version when the two
+ * statements replaced disjoint partitions, and the later statement fails with a
+ * {@link ConflictException} when both replaced the same partition.
+ *
+ * <p>Unreferenced partition files are deleted only when an engine opens the directory, so files
+ * of a version that a running statement still reads stay in place until the next start. Use
+ * exactly one engine per data directory: engines in different processes do not coordinate.
+ * Process-crash recovery is supported while the operating system remains running; power-loss
+ * durability is not promised.
  *
  * @author Team 1
- * @version 0.7
+ * @version 0.8
  * @see ColumnSpec
  * @see Planner
  * @since 0.2
@@ -35,10 +43,15 @@ public final class StorageEngine {
     private static final int OUTPUT_BUFFER_BYTES = 1 << 16;
     /** Catalog persistence helper for the storage root. */
     private final CatalogStore catalogs;
-    /** Current immutable table snapshots indexed by logical name. */
+    /** Current immutable table snapshots indexed by logical name, guarded by {@link #lock}. */
     private final Map<String, Table> tables;
     /** Positive maximum number of rows written to each partition. */
     private final int maxRowsPerPartition;
+    /** Serializes table lookups, table creation and commits; never held while reading or staging data. */
+    private final Object lock = new Object();
+
+    /** Runs before a commit's validation. Production never touches it; a test parks a writer here. */
+    volatile Runnable beforeCommit = () -> { };
 
     /**
      * Opens a storage directory using a maximum of 1,000 rows per partition.
@@ -101,20 +114,21 @@ public final class StorageEngine {
      * @throws IllegalArgumentException if the schema is invalid or the table already exists
      * @throws UncheckedIOException if the catalog cannot be persisted
      * @since 0.2
-     * @version 0.7
+     * @version 0.8
      */
-    public synchronized void createTable(String tableName, List<ColumnSpec> columns) {
+    public void createTable(String tableName, List<ColumnSpec> columns) {
         long start = startCall();
         boolean success = false;
         try {
             CatalogStore.validateSchema(tableName, columns);
-            if (tables.containsKey(tableName)) throw new IllegalArgumentException("Table already exists: " + tableName);
-            var table = new Table(2, UUID.randomUUID().toString(), tableName, columns,
-                    new Snapshot(0, List.of()), null);
-            catalogs.save(table);
-            tables.put(tableName, table);
+            synchronized (lock) {
+                if (tables.containsKey(tableName)) throw new IllegalArgumentException("Table already exists: " + tableName);
+                var table = new Table(2, UUID.randomUUID().toString(), tableName, columns,
+                        new Snapshot(0, List.of()), null);
+                catalogs.save(table);
+                tables.put(tableName, table);
+            }
             success = true;
-            catalogs.cleanup(tables.values());
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot create table " + tableName, e);
         } finally {
@@ -128,39 +142,48 @@ public final class StorageEngine {
      * <p>Each new partition has a unique file; malformed input rolls back only this copy.
      * Empty input still commits the next version without creating partition files. Input is
      * limited to its byte length when opened, excluding later appends but not in-place edits.
+     * A copy only adds partitions, so it never conflicts: after a concurrent commit it is
+     * rebased onto the newer version.
      *
      * @param tableName the destination table
      * @param csvFilePath the input CSV path
+     * @return the committed version and the rows and partitions this copy added
      * @throws IllegalArgumentException if the table, path or any input row is invalid
      * @throws ArithmeticException if the table version would overflow
      * @throws UncheckedIOException if input, staging or catalog publication fails
      * @since 0.2
-     * @version 0.7
+     * @version 0.8
      */
-    public synchronized void copyFile(String tableName, String csvFilePath) {
-        copyFile(requireTable(tableName), csvFilePath);
+    public CopyResult copyFile(String tableName, String csvFilePath) {
+        return copyFile(requireTable(tableName), csvFilePath);
     }
 
     /**
      * Appends input using the snapshot captured before statement binding.
      *
+     * <p>Parsing and staging run without the engine lock; only the commit is serialized.
+     *
      * @param base the captured table
      * @param csvFilePath the CSV source
+     * @return the committed version and the rows and partitions this copy added
      * @throws IllegalArgumentException if the source or a row is invalid
      * @throws ArithmeticException if the version would overflow
      * @throws UncheckedIOException if copying or publication fails
      * @since 0.7
+     * @version 0.8
      */
-    synchronized void copyFile(Table base, String csvFilePath) {
+    CopyResult copyFile(Table base, String csvFilePath) {
         long start = startCall();
         long rowCount = 0;
         int partitionCount = 0;
+        long version = base.current().tableVersion();
         boolean committed = false;
         List<Path> staged = new ArrayList<>();
-        long version = Math.incrementExact(base.current().tableVersion());
+        // Fail before staging anything if even the next version after the base would overflow.
+        Math.incrementExact(version);
         try {
             if (csvFilePath == null) throw new IllegalArgumentException("CSV path is required");
-            List<DataFile> files = new ArrayList<>(base.files());
+            List<DataFile> added = new ArrayList<>();
             try (var input = new BufferedReader(new InputStreamReader(
                     new SnapshotInputStream(Path.of(csvFilePath)), StandardCharsets.UTF_8))) {
                 List<Object[]> rows = new ArrayList<>();
@@ -168,36 +191,50 @@ public final class StorageEngine {
                 while ((line = input.readLine()) != null) {
                     rows.add(CsvRowParser.parse(line, base.columns(), csvFilePath, ++rowCount));
                     if (rows.size() == maxRowsPerPartition) {
-                        files.add(stagePartition(base, rows, partitionCount++, staged));
+                        added.add(stagePartition(base, rows, partitionCount++, staged));
                         rows.clear();
                     }
                 }
-                if (!rows.isEmpty()) files.add(stagePartition(base, rows, partitionCount++, staged));
+                if (!rows.isEmpty()) added.add(stagePartition(base, rows, partitionCount++, staged));
             }
-            commit(base, files, version);
+            version = commit(base, WriteSet.append(added));
             committed = true;
-            catalogs.cleanup(tables.values());
+            return new CopyResult(version, rowCount, partitionCount);
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot copy " + csvFilePath + " near line " + (rowCount + 1), e);
         } finally {
             if (!committed) for (Path path : staged) catalogs.remove(path);
             LOGGER.debug("operation=copyFile table={} file={} rows={} partitions={} success={} version={} durationMs={}",
                     clean(base.name()), clean(csvFilePath), rowCount, partitionCount, committed,
-                    committed ? version : base.current().tableVersion(), elapsed(start));
+                    version, elapsed(start));
         }
     }
 
     /**
+     * Describes the committed result of one copy statement.
+     *
+     * @param version the version the copy committed, which is later than its base's next version
+     *                when the copy was rebased onto a concurrent commit
+     * @param rows the number of rows read from the input and appended
+     * @param partitions the number of partitions the copy added
+     * @author Team 1
+     * @since 0.8
+     * @version 0.8
+     */
+    public record CopyResult(long version, long rows, int partitions) { }
+
+    /**
      * Describes the visible result and partition work of one delete statement.
      *
-     * @param version the version committed, or read for a no-op
+     * @param version the version committed, which is later than the base's next version when the
+     *                delete was rebased onto a concurrent commit, or the base version for a no-op
      * @param rowsDeleted the number of matching rows removed
      * @param partitionsRewritten the number replaced by nonempty survivor partitions
      * @param partitionsCarried the number retained unchanged, including pruned partitions
      * @param partitionsRemoved the number dropped without replacement
      * @author Team 1
      * @since 0.7
-     * @version 0.7
+     * @version 0.8
      */
     public record DeleteResult(long version, long rowsDeleted, int partitionsRewritten,
                                int partitionsCarried, int partitionsRemoved) { }
@@ -209,16 +246,22 @@ public final class StorageEngine {
      * data. No matches preserve the version and retained history. Candidate partitions use the
      * same pruning and typed comparison semantics as SELECT, preserving surviving row order.
      *
+     * <p>If another statement committed after this one started, the delete is rebased onto that
+     * version when the two replaced disjoint partitions. Rows that a concurrent copy added are
+     * not deleted, as if this delete had run before the copy.
+     *
      * @param tableName the target table
      * @param where the optional typed comparison, empty to delete every row
      * @return deletion counts and the resulting version
      * @throws IllegalArgumentException if the table or predicate is invalid
      * @throws ArithmeticException if a changing delete would overflow the version
+     * @throws ConflictException if a concurrent commit already replaced a partition this delete
+     *                           replaces; the table is left unchanged and the delete can be rerun
      * @throws UncheckedIOException if reading, staging or publication fails
      * @since 0.7
-     * @version 0.7
+     * @version 0.8
      */
-    public synchronized DeleteResult delete(String tableName, Optional<Predicate> where) {
+    public DeleteResult delete(String tableName, Optional<Predicate> where) {
         var base = requireTable(tableName);
         new Binder(this).bind(new DeleteStatement(tableName, where), base);
         return delete(base, where);
@@ -227,14 +270,19 @@ public final class StorageEngine {
     /**
      * Executes a bound delete against the captured statement snapshot.
      *
+     * <p>Reading and staging run without the engine lock; only the commit is serialized.
+     *
      * @param base the captured table
      * @param where the validated optional predicate
      * @return the committed or unchanged version and work counts
      * @throws ArithmeticException if a changing statement would overflow
+     * @throws ConflictException if a concurrent commit already replaced a partition this delete
+     *                           replaces
      * @throws UncheckedIOException if data access or publication fails
      * @since 0.7
+     * @version 0.8
      */
-    synchronized DeleteResult delete(Table base, Optional<Predicate> where) {
+    DeleteResult delete(Table base, Optional<Predicate> where) {
         long start = startCall();
         long deleted = 0;
         int rewritten = 0;
@@ -242,21 +290,22 @@ public final class StorageEngine {
         int removed = 0;
         boolean committed = false;
         List<Path> staged = new ArrayList<>();
-        List<DataFile> candidate = new ArrayList<>();
+        Map<WriteSet.PartitionKey, List<DataFile>> replacements = new LinkedHashMap<>();
         int index = where.isPresent() ? Planner.columnIndex(base.columns(), where.orElseThrow().columnName()) : -1;
         try {
             for (var file : base.files()) {
                 for (var partition : file.partitions()) {
+                    var key = new WriteSet.PartitionKey(file.path(), partition);
                     if (where.isEmpty()) {
                         deleted = Math.addExact(deleted, partition.rowCount());
                         removed++;
+                        replacements.put(key, List.of());
                         continue;
                     }
                     var predicate = where.orElseThrow();
                     var type = base.columns().get(index).type();
                     if (PartitionPruner.canPrune(type, partition.chunks().get(index).statistics(),
                             predicate.comparison(), predicate.constant())) {
-                        candidate.add(new DataFile(file.path(), List.of(partition)));
                         carried++;
                         continue;
                     }
@@ -275,23 +324,24 @@ public final class StorageEngine {
                     }
                     int matches = partition.rowCount() - survivors.size();
                     if (matches == 0) {
-                        candidate.add(new DataFile(file.path(), List.of(partition)));
                         carried++;
                     } else {
                         // Check before staging any replacement for an overflowing version.
                         Math.incrementExact(base.current().tableVersion());
                         deleted = Math.addExact(deleted, matches);
-                        if (survivors.isEmpty()) removed++;
-                        else candidate.add(stagePartition(base, survivors, rewritten++, staged));
+                        if (survivors.isEmpty()) {
+                            removed++;
+                            replacements.put(key, List.of());
+                        } else {
+                            replacements.put(key, List.of(stagePartition(base, survivors, rewritten++, staged)));
+                        }
                     }
                 }
             }
             long version = base.current().tableVersion();
             if (deleted > 0) {
-                version = Math.incrementExact(version);
-                commit(base, candidate, version);
+                version = commit(base, new WriteSet(replacements, List.of()));
                 committed = true;
-                catalogs.cleanup(tables.values());
             }
             LOGGER.debug("operation=delete table={} rowsDeleted={} partitionsRewritten={} partitionsCarried={} partitionsRemoved={} version={} durationMs={}",
                     clean(base.name()), deleted, rewritten, carried, removed, version, elapsed(start));
@@ -332,18 +382,47 @@ public final class StorageEngine {
     }
 
     /**
-     * Publishes a fully prepared next version and installs it in memory.
+     * Validates a statement's change against the committed version, then publishes the next one.
      *
-     * @param base the captured current state
-     * @param files the candidate ordered file references
-     * @param version the checked next version
+     * <p>Runs {@link #beforeCommit} first, without holding the lock. Validation, the swap and the
+     * catalog save then run in one critical section. If no one committed since {@code base}, the
+     * change applies to the base's partition list. Otherwise it is rebased onto the committed
+     * list, unless a commit in between already replaced a partition that this change replaces.
+     *
+     * @param base the table version the statement started from
+     * @param changes the statement's change relative to {@code base}
+     * @return the committed version, one after the version committed before it
+     * @throws ConflictException if a concurrent commit already replaced a partition that
+     *                           {@code changes} replaces; nothing is published
+     * @throws ArithmeticException if the next version would overflow
+     * @throws IllegalStateException if the table was removed or replaced during the statement
      * @throws IOException if catalog validation or publication fails
      */
-    private void commit(Table base, List<DataFile> files, long version) throws IOException {
-        var replacement = new Table(2, base.id(), base.name(), base.columns(),
-                new Snapshot(version, files), base.current());
-        catalogs.save(replacement);
-        tables.put(base.name(), replacement);
+    private long commit(Table base, WriteSet changes) throws IOException {
+        beforeCommit.run();
+        synchronized (lock) {
+            var current = tables.get(base.name());
+            if (current == null || !current.id().equals(base.id())) {
+                throw new IllegalStateException("Table " + base.name() + " was replaced during the statement");
+            }
+            long baseVersion = base.current().tableVersion();
+            long currentVersion = current.current().tableVersion();
+            var files = changes.applyTo(current.files());
+            if (files.isEmpty()) {
+                LOGGER.error("conflict table={} base={} current={}", clean(base.name()), baseVersion, currentVersion);
+                throw new ConflictException(base.name(), baseVersion, currentVersion);
+            }
+            long version = Math.incrementExact(currentVersion);
+            var replacement = new Table(2, current.id(), current.name(), current.columns(),
+                    new Snapshot(version, files.get()), current.current());
+            catalogs.save(replacement);
+            tables.put(base.name(), replacement);
+            if (baseVersion != currentVersion) {
+                LOGGER.info("rebase table={} base={} current={} version={}",
+                        clean(base.name()), baseVersion, currentVersion, version);
+            }
+            return version;
+        }
     }
 
     /**
@@ -402,11 +481,14 @@ public final class StorageEngine {
      * @return the current immutable table snapshot
      * @throws IllegalArgumentException if the table is unknown
      * @since 0.4
+     * @version 0.8
      */
-    synchronized Table requireTable(String name) {
-        var table = tables.get(name);
-        if (table == null) throw new IllegalArgumentException("Unknown table: " + name);
-        return table;
+    Table requireTable(String name) {
+        synchronized (lock) {
+            var table = tables.get(name);
+            if (table == null) throw new IllegalArgumentException("Unknown table: " + name);
+            return table;
+        }
     }
 
     /**
@@ -417,8 +499,9 @@ public final class StorageEngine {
      * @throws IllegalArgumentException if the table is unknown
      * @throws UncheckedIOException if the catalog path cannot be resolved
      * @since 0.4
+     * @version 0.8
      */
-    synchronized Path publishedDataFile(String tableName) {
+    Path publishedDataFile(String tableName) {
         var table = requireTable(tableName);
         if (table.files().isEmpty()) {
             return null;
@@ -437,9 +520,9 @@ public final class StorageEngine {
      * @return the ordered column definitions
      * @throws IllegalArgumentException if the table is unknown
      * @since 0.3
-     * @version 0.7
+     * @version 0.8
      */
-    public synchronized List<ColumnSpec> schema(String tableName) {
+    public List<ColumnSpec> schema(String tableName) {
         return List.copyOf(requireTable(tableName).columns());
     }
 
