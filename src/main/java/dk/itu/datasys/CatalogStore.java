@@ -231,11 +231,15 @@ final class CatalogStore {
     /**
      * Removes recognized files absent from every current and previous snapshot.
      *
-     * <p>Each failure is logged and may be retried on later commits or startup. Unknown filenames
-     * and directories are preserved. The caller must first load and validate every catalog.
+     * <p>Each failure is logged and retried at the next startup. Unknown filenames and directories
+     * are preserved. The caller must first load and validate every catalog, and must call this
+     * only while no statement runs: it also removes partition files a running statement is still
+     * staging or reading, and catalog temporary files of a save in progress. The storage engine
+     * therefore calls it only when it opens the directory.
      *
      * @param tables all loaded tables after the latest heap installation
      * @since 0.7
+     * @version 0.8
      */
     void cleanup(Collection<Table> tables) {
         Set<String> live = new HashSet<>();

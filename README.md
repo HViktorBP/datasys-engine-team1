@@ -47,8 +47,11 @@ removed the test-only `StorageEngine.select` materializing API, its scan-statist
 getter, and `SqlPrinter`. `QueryPlan.stats()` and planner `decision=` records
 describe partition activity.
 
-Use one engine per directory and execute statements sequentially, consuming and
-closing each query before the next statement. Repeated `COPY` appends rows;
+Use one engine per directory. Statements may run concurrently within that engine:
+each works on the version it pinned when it started, and its commit is replayed on
+the version committed by then. Disjoint changes rebase; two DELETEs that rewrite the
+same partition conflict, and the later one fails with `ConflictException` and must
+be rerun. Repeated `COPY` appends rows;
 `DELETE FROM trips WHERE distance > 100` removes matches through partition rewrites,
 and `DELETE FROM trips` empties the table without decoding data. Each statement
 commits independently. CREATE starts at table version 0, COPY always increments
@@ -58,11 +61,13 @@ SELECT reads a snapshot captured before binding. Statement summaries log `versio
 Catalog format 2 retains current and previous committed states across restart.
 Older catalogs are unsupported; use a fresh data directory for this release.
 Atomic catalog replacement supports recovery from Java process crashes while
-the OS stays running. OS crashes, power loss, concurrent statements and multiple
-engines on one directory are outside the supported contract. Cleanup preserves
-files referenced by either retained version and retries failures on later commits
-or startup. Generated state belongs under the Git-ignored `data/` directory. See the
+the OS stays running. OS crashes, power loss and multiple engines on one
+directory are outside the supported contract. Unreferenced files are deleted only
+when an engine opens the directory, so a running statement never loses a version
+it pinned; retired files stay on disk until the next start. Generated state belongs
+under the Git-ignored `data/` directory. See the
 [transaction design](docs/transaction-design.md),
+[Exercise 8 release notes](docs/exercise-8.md),
 [Exercise 7 release notes](docs/exercise-7.md),
 [storage design](docs/storage-design.md),
 [debugger walkthrough and release checklist](docs/exercise-5.md), and

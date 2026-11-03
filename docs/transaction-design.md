@@ -20,3 +20,75 @@
 
 - **Partition placement:** do new partitions go at the end of the table's single data file, or into a file of their own? Either answer can be defended; write yours down.
 - file of their own
+
+## Exercise 8: concurrent writers
+
+These answers extend the Exercise 7 design above.
+
+- **Concurrency control:** optimistic. A writer pins its base version, reads its
+  rewrite set and stages new partition files without holding any lock. Only the
+  commit is serialized: validation, the swap of the table's partition list and the
+  catalog save run in one critical section on a single engine lock. The test hook
+  `beforeCommit` runs right before that section, outside the lock, so a writer
+  parked there blocks no one.
+
+- **Validation and conflict granularity:** relaxed, at partition grain. Rejecting
+  every commit whose base is no longer current would abort writers that never
+  touched the same data, such as two appending COPYs. Each writer records its
+  change relative to its base: the partitions it replaced, each with its
+  replacement file or with nothing if all its rows were deleted, and the files it
+  appended. A partition is identified by its file path and its exact
+  metadata, including chunk offsets. At commit the change is replayed on the
+  version committed by then. If a commit in between already replaced or removed a
+  partition this writer also replaced, the writer loses. Otherwise it is rebased:
+  replacements are substituted in place, appended files go last, and the result
+  becomes the next version after the current one.
+
+  | Race | Outcome |
+  |---|---|
+  | COPY / COPY | both commit; the later one is rebased |
+  | DELETE / COPY, either order | both commit |
+  | DELETE / DELETE, different partitions | both commit |
+  | DELETE / DELETE, same partition (even different rows) | the later committer aborts |
+
+- **Semantics of a rebased DELETE:** a DELETE that is rebased onto a COPY does not
+  delete rows the COPY added, even if they match its predicate, because it only
+  examined the partitions of its own snapshot. The result equals running the DELETE
+  first and the COPY second. Concurrent statements are correct when their result
+  equals running them one after the other in some order, so this is allowed. A
+  reader of the COPY's version briefly sees the COPY without the DELETE.
+
+- **On a conflict:** the losing statement throws `ConflictException` (a
+  `RuntimeException`), and the engine logs `conflict table=… base=… current=…` at
+  ERROR. Nothing it wrote is reachable, because no catalog references its staged
+  files; it deletes them before returning, and a crash would leave orphans that the
+  next startup removes. The engine does not retry by itself: the caller reruns the
+  statement, which then starts from the newest version and decides again which rows
+  match.
+
+- **Concurrent appends to one file:** cannot happen. Two writers that appended to
+  the same data file could overwrite each other's bytes or interleave them, even if
+  their catalog commits were then serialized correctly. Here every partition is
+  written to a new file of its own, so writers never share a file they write.
+
+- **Retention and cleanup (changed):** Exercise 7 kept the current and previous
+  version and deleted every other partition file after each commit. A running
+  statement could therefore lose files it still needed: a scan pinned to a version
+  failed with `Cannot read …` after two later commits, and a writer parked before
+  its commit lost its staged files to the winner's cleanup. Catalogs still retain
+  the current and previous version, but unreferenced files are now deleted only when
+  an engine opens the directory. A running engine deletes nothing except a failed
+  statement's own staged files, so a statement can never ask for a version that is
+  gone while it runs. The cost is that retired files stay on disk until the next
+  start.
+
+- **Not supported:** several engines, for example in several processes, on one data
+  directory. They share no lock, and one engine's startup cleanup can delete another
+  engine's staged files. A directory lock was deferred, because the tests reopen the
+  same directory in one JVM to check restarts.
+
+- **Testing:** races are forced, not hoped for. A test parks one writer in
+  `beforeCommit` with two latches while another statement commits on the test
+  thread, or runs the second statement nested in the hook on the same thread, which
+  needs no second thread at all. Every wait has a timeout, so a broken engine fails
+  a test instead of hanging the build.

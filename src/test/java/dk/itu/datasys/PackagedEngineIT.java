@@ -16,7 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
  * Exercises the shaded JAR and launcher in a separate working directory.
  *
  * @author Team 1
- * @version 0.7
+ * @version 0.8
  * @since 0.5
  */
 class PackagedEngineIT {
@@ -106,7 +106,8 @@ class PackagedEngineIT {
         assertEquals(expected, launch("-f", "transactions.sql"));
         var logs = Files.readAllLines(dir.resolve("logs/engine.log"));
         for (String summary : List.of("statement=CREATE_TABLE table=tx rowsOut=0 version=0",
-                "statement=COPY table=tx rowsOut=0 version=1", "statement=COPY table=tx rowsOut=0 version=2",
+                "statement=COPY table=tx rows=4 partitions=1 version=1",
+                "statement=COPY table=tx rows=2 partitions=1 version=2",
                 "statement=SELECT table=tx rowsOut=4 version=3")) {
             assertTrue(logs.stream().anyMatch(line -> line.contains(summary)), summary);
         }

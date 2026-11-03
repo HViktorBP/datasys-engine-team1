@@ -129,6 +129,9 @@ class TransactionTest {
         assertTrue(e.requireTable("t").files().isEmpty());
         assertTrue(Files.exists(dir.resolve(before.files().getFirst().path())));
         copy(e, ""); // Retires the last version that still owns the old file.
+        // A running engine deletes nothing; the next engine on this directory reclaims the file.
+        assertTrue(Files.exists(dir.resolve(before.files().getFirst().path())));
+        new StorageEngine(dir, 2);
         assertFalse(Files.exists(dir.resolve(before.files().getFirst().path())));
     }
 
@@ -303,6 +306,9 @@ class TransactionTest {
         e.delete("t", Optional.empty());
         assertTrue(Files.exists(dir.resolve(relative)));
         copy(e, "");
+        // No retained version references the file now, but only the next engine reclaims it.
+        assertTrue(Files.exists(dir.resolve(relative)));
+        new StorageEngine(dir, 2);
         assertFalse(Files.exists(dir.resolve(relative)));
     }
 

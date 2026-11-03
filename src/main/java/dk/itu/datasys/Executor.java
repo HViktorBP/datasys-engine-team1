@@ -13,10 +13,12 @@ import org.slf4j.MDC;
  *
  * <p>{@code CREATE TABLE}, {@code COPY} and {@code DELETE} call storage directly.
  * Each table-dependent statement captures immutable metadata before binding. {@code SELECT}
- * drains a planned Volcano pipeline and writes headerless CSV rows.
+ * drains a planned Volcano pipeline and writes headerless CSV rows. A changing statement's
+ * summary reports the version it actually committed, which is later than its base's next version
+ * when the statement was rebased onto a concurrent commit.
  *
  * @author Team 1
- * @version 0.7
+ * @version 0.8
  * @since 0.4
  */
 public final class Executor {
@@ -58,8 +60,10 @@ public final class Executor {
      *                                  a statement fails catalog or API validation
      * @throws UncheckedIOException if storage I/O fails
      * @throws ArithmeticException if a changing statement would overflow its table version
+     * @throws ConflictException if a changing statement loses a write conflict to a concurrent
+     *                           commit; the table is unchanged and the statement can be rerun
      * @since 0.4
-     * @version 0.7
+     * @version 0.8
      */
     public void execute(List<Statement> statements, PrintStream rowsOut) {
         if (statements == null) {
@@ -101,8 +105,9 @@ public final class Executor {
      * @throws IllegalArgumentException if catalog or API validation fails
      * @throws UncheckedIOException if storage I/O fails
      * @throws ArithmeticException if a changing statement would overflow its table version
+     * @throws ConflictException if a changing statement loses a write conflict
      * @since 0.7
-     * @version 0.7
+     * @version 0.8
      */
     private Summary execute(Statement statement, PrintStream rowsOut) {
         var snapshot = switch (statement) {
@@ -118,9 +123,9 @@ public final class Executor {
                 yield new Summary("CREATE_TABLE", create.tableName(), 0, "rowsOut=0");
             }
             case CopyStatement copy -> {
-                engine.copyFile(snapshot, copy.csvFilePath());
-                yield new Summary("COPY", copy.tableName(),
-                        Math.incrementExact(snapshot.current().tableVersion()), "rowsOut=0");
+                var result = engine.copyFile(snapshot, copy.csvFilePath());
+                yield new Summary("COPY", copy.tableName(), result.version(),
+                        "rows=" + result.rows() + " partitions=" + result.partitions());
             }
             case SelectStatement select -> {
                 int rows = executeSelect(select, snapshot, rowsOut);
