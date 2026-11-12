@@ -4,6 +4,7 @@ import dk.itu.datasys.CatalogStore.Table;
 import dk.itu.datasys.ScanOperator.PartitionRef;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +13,15 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Each {@code FROM} entry gets its own pipeline: a {@link ScanOperator} over the partitions
  * that survive pruning, wrapped in one {@link FilterOperator} per filter on that table. Filters
- * therefore sit directly above their table's scan, where min/max pruning applies.
+ * therefore sit directly below the joins, right above their table's scan, where min/max pruning
+ * applies.
+ *
+ * <p>The pipelines are then joined left-deep in {@code FROM}-list order: the result so far builds
+ * the hash table and the next table probes it. Each table after the first needs a join predicate
+ * that connects it to a table before it; the first such predicate in {@code WHERE} order becomes
+ * the hash-join key and any further ones run as a {@link ColumnEqualityFilterOperator} above that
+ * join. Because every join puts its build columns first, {@code SELECT *} returns columns in
+ * {@code FROM}-list order. This order is deliberately naive: it is the baseline for join ordering.
  *
  * <p>Pruning uses catalog min/max statistics only. Decision log lines are emitted before any
  * operator opens a data file. A partition is pruned when any filter on its table proves that it
@@ -53,8 +62,8 @@ public final class Planner {
      *
      * @param statement the bound select statement
      * @return the operator tree and the {@link ScanStats} of each {@code FROM} entry
-     * @throws IllegalArgumentException if a table or column is unknown, or the statement joins
-     *                                  several tables
+     * @throws IllegalArgumentException if a table or column is unknown, or a table has no join
+     *                                  predicate to the tables before it
      * @since 0.4
      * @version 0.10
      */
@@ -68,8 +77,8 @@ public final class Planner {
      * @param statement the bound select
      * @param snapshots the immutable snapshot of each {@code FROM} entry
      * @return the operator tree and the pruning counts of each {@code FROM} entry
-     * @throws IllegalArgumentException if a column is unknown, or the statement joins several
-     *                                  tables
+     * @throws IllegalArgumentException if a column is unknown, or a table has no join predicate
+     *                                  to the tables before it
      * @since 0.7
      * @version 0.10
      */
@@ -87,11 +96,65 @@ public final class Planner {
             String name = statement.tables().get(table).exposedName();
             pipelines.add(scanAndFilter(name, snapshots.get(table), filters, resolver, stats));
         }
-        if (pipelines.size() > 1) {
-            throw new IllegalArgumentException("Joins are not supported yet");
+        Operator joined = pipelines.getFirst();
+        for (int table = 1; table < pipelines.size(); table++) {
+            joined = joinNext(statement, resolver, joined, pipelines.get(table), table);
         }
-        return new QueryPlan(pipelines.getFirst(), stats);
+        return new QueryPlan(joined, stats);
     }
+
+    /**
+     * Joins the next {@code FROM} entry to the result of the entries before it.
+     *
+     * <p>{@code joined} produces the concatenated rows of entries {@code 0} to {@code table - 1},
+     * so the resolver's joined-row position of an earlier column is also its position in a
+     * {@code joined} row.
+     *
+     * @param statement the select statement
+     * @param resolver the resolver for the statement's tables
+     * @param joined the plan of the entries before {@code table}; it builds the hash table
+     * @param next the pipeline of entry {@code table}; it probes
+     * @param table the position of the new entry in the {@code FROM} list
+     * @return the hash join, under an equality filter per further connecting predicate
+     * @throws IllegalArgumentException if no join predicate connects the entry to an earlier one
+     */
+    private Operator joinNext(SelectStatement statement, ColumnResolver resolver, Operator joined,
+                              Operator next, int table) {
+        List<Connection> connecting = new ArrayList<>();
+        for (var join : statement.joins()) {
+            var left = resolver.resolve(join.left());
+            var right = resolver.resolve(join.right());
+            if (right.table() == table && left.table() < table) {
+                connecting.add(new Connection(left, right));
+            } else if (left.table() == table && right.table() < table) {
+                connecting.add(new Connection(right, left));
+            }
+        }
+        if (connecting.isEmpty()) {
+            throw new IllegalArgumentException("No join predicate connects "
+                    + statement.tables().get(table).exposedName()
+                    + " to the tables before it; reorder the FROM list");
+        }
+        var first = connecting.getFirst();
+        String tables = statement.tables().subList(0, table + 1).stream()
+                .map(TableRef::exposedName)
+                .collect(Collectors.joining(";"));
+        Operator root = new HashJoinOperator(joined, next, first.earlier().rowIndex(),
+                first.added().column(), tables);
+        for (var extra : connecting.subList(1, connecting.size())) {
+            root = new ColumnEqualityFilterOperator(root, extra.earlier().rowIndex(),
+                    extra.added().rowIndex(), extra.added().type());
+        }
+        return root;
+    }
+
+    /**
+     * A join predicate that connects the table being added to a table before it.
+     *
+     * @param earlier the column of the table already joined
+     * @param added the column of the table being added
+     */
+    private record Connection(ColumnResolver.Resolved earlier, ColumnResolver.Resolved added) { }
 
     /**
      * Builds one table's pipeline: a scan of the surviving partitions under its filters.
