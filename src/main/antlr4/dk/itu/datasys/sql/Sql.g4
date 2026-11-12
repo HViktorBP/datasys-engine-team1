@@ -11,9 +11,14 @@ columnType  : STRING | LONG | DOUBLE ;
 
 copy        : COPY IDENTIFIER FROM STRING_LITERAL ;
 
-select      : SELECT '*' FROM IDENTIFIER (WHERE predicate)? ;
-delete      : DELETE FROM IDENTIFIER (WHERE predicate)? ;
-predicate   : IDENTIFIER comparison=('=' | '<' | '>') literal ;
+select      : SELECT '*' FROM tableRef (',' tableRef)* (WHERE condition)? ;
+tableRef    : table=IDENTIFIER (alias=IDENTIFIER)? ;
+delete      : DELETE FROM IDENTIFIER (WHERE filter)? ;
+condition   : predicate (AND predicate)* ;
+predicate   : filter | join ;
+filter      : columnRef comparison=('=' | '<' | '>') literal ;
+join        : left=columnRef '=' right=columnRef ;
+columnRef   : (qualifier=IDENTIFIER '.')? name=IDENTIFIER ;
 literal     : STRING_LITERAL | LONG_LITERAL | DOUBLE_LITERAL ;
 
 CREATE : 'CREATE' ;
@@ -23,6 +28,7 @@ FROM   : 'FROM' ;
 SELECT : 'SELECT' ;
 WHERE  : 'WHERE' ;
 DELETE : 'DELETE' ;
+AND    : 'AND' ;
 STRING : 'STRING' ;
 LONG   : 'LONG' ;
 DOUBLE : 'DOUBLE' ;

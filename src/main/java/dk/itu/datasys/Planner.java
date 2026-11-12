@@ -10,12 +10,19 @@ import org.slf4j.LoggerFactory;
 /**
  * Turns a bound {@link SelectStatement} into a Volcano plan and records partition pruning.
  *
+ * <p>Each {@code FROM} entry gets its own pipeline: a {@link ScanOperator} over the partitions
+ * that survive pruning, wrapped in one {@link FilterOperator} per filter on that table. Filters
+ * therefore sit directly above their table's scan, where min/max pruning applies.
+ *
  * <p>Pruning uses catalog min/max statistics only. Decision log lines are emitted before any
- * operator opens a data file. Without a predicate, every partition is logged as
- * {@code decision=READ reason=noPredicate}.
+ * operator opens a data file. A partition is pruned when any filter on its table proves that it
+ * holds no match; the filters are checked in {@code WHERE} order and each check logs one line,
+ * stopping at the first {@code PRUNED}. Without filters, every partition is logged as
+ * {@code decision=READ reason=noPredicate}. The {@code table} field holds the alias when the
+ * {@code FROM} entry has one.
  *
  * @author Team 1
- * @version 0.7
+ * @version 0.10
  * @since 0.4
  */
 public final class Planner {
@@ -40,75 +47,118 @@ public final class Planner {
     }
 
     /**
-     * Builds a scan or filter-over-scan plan for a select statement.
+     * Builds the plan for a select statement against the current table snapshots.
      *
-     * <p>Logs one read/prune decision per catalog partition before opening data files,
-     * including read decisions when the statement has no predicate.
+     * <p>Logs the read/prune decisions of every catalog partition before opening data files.
      *
      * @param statement the bound select statement
-     * @return the operator tree and catalog {@link ScanStats}
-     * @throws IllegalArgumentException if the table or predicate column is unknown
+     * @return the operator tree and the {@link ScanStats} of each {@code FROM} entry
+     * @throws IllegalArgumentException if a table or column is unknown, or the statement joins
+     *                                  several tables
      * @since 0.4
-     * @version 0.7
+     * @version 0.10
      */
     public QueryPlan plan(SelectStatement statement) {
-        return plan(statement, engine.requireTable(statement.tableName()));
+        return plan(statement, engine.requireTables(statement.tables()));
     }
 
     /**
      * Plans from the statement's captured metadata without resolving current state again.
      *
      * @param statement the bound select
-     * @param table the immutable statement snapshot
-     * @return the operator tree and pruning counts
-     * @throws IllegalArgumentException if the predicate column is unknown
+     * @param snapshots the immutable snapshot of each {@code FROM} entry
+     * @return the operator tree and the pruning counts of each {@code FROM} entry
+     * @throws IllegalArgumentException if a column is unknown, or the statement joins several
+     *                                  tables
      * @since 0.7
-     * @version 0.7
+     * @version 0.10
      */
-    QueryPlan plan(SelectStatement statement, Table table) {
-        var columns = table.columns();
-        var partitions = allPartitions(table);
-        var where = statement.where();
-        if (where.isEmpty()) {
-            int total = partitions.size();
-            for (int index = 0; index < total; index++) {
-                LOGGER.debug("table={} partition={} decision=READ reason=noPredicate",
-                        StorageEngine.clean(statement.tableName()), index);
+    QueryPlan plan(SelectStatement statement, List<Table> snapshots) {
+        var resolver = new ColumnResolver(statement.tables(), snapshots);
+        List<Operator> pipelines = new ArrayList<>();
+        List<ScanStats> stats = new ArrayList<>();
+        for (int table = 0; table < snapshots.size(); table++) {
+            List<Predicate> filters = new ArrayList<>();
+            for (var filter : statement.filters()) {
+                if (resolver.resolve(filter.column()).table() == table) {
+                    filters.add(filter);
+                }
             }
-            return new QueryPlan(new ScanOperator(columns, partitions),
-                    new ScanStats(total, total, 0));
+            String name = statement.tables().get(table).exposedName();
+            pipelines.add(scanAndFilter(name, snapshots.get(table), filters, resolver, stats));
         }
+        if (pipelines.size() > 1) {
+            throw new IllegalArgumentException("Joins are not supported yet");
+        }
+        return new QueryPlan(pipelines.getFirst(), stats);
+    }
 
-        var predicate = where.orElseThrow();
-        int columnIndex = columnIndex(columns, predicate.columnName());
-        ColumnType type = columns.get(columnIndex).type();
+    /**
+     * Builds one table's pipeline: a scan of the surviving partitions under its filters.
+     *
+     * @param name the table's exposed name, used in log lines
+     * @param table the table snapshot
+     * @param filters the filters on this table
+     * @param resolver the resolver that locates each filter's column
+     * @param stats receives this table's pruning counts
+     * @return the scan, wrapped in one filter per predicate
+     */
+    private Operator scanAndFilter(String name, Table table, List<Predicate> filters,
+                                   ColumnResolver resolver, List<ScanStats> stats) {
+        var partitions = allPartitions(table);
         List<PartitionRef> surviving = new ArrayList<>();
-        int total = 0;
-        int pruned = 0;
-        for (var partition : partitions) {
-            var statistics = partition.partition().chunks().get(columnIndex).statistics();
-            boolean skip = PartitionPruner.canPrune(type, statistics, predicate.comparison(),
-                    predicate.constant());
+        for (int index = 0; index < partitions.size(); index++) {
+            if (filters.isEmpty()) {
+                LOGGER.debug("table={} partition={} decision=READ reason=noPredicate",
+                        StorageEngine.clean(name), index);
+                surviving.add(partitions.get(index));
+            } else if (!canPrune(name, index, partitions.get(index), filters, resolver)) {
+                surviving.add(partitions.get(index));
+            }
+        }
+        int total = partitions.size();
+        stats.add(new ScanStats(total, surviving.size(), total - surviving.size()));
+
+        Operator root = new ScanOperator(table.columns(), surviving);
+        for (var filter : filters) {
+            var column = resolver.resolve(filter.column());
+            root = new FilterOperator(root, column.column(), column.type(), filter.comparison(),
+                    filter.constant());
+        }
+        return root;
+    }
+
+    /**
+     * Tests the filters of a table against one partition's statistics and logs each check.
+     *
+     * @param name the table's exposed name, used in log lines
+     * @param index the partition's position in catalog order
+     * @param partition the partition
+     * @param filters the filters on this table, at least one
+     * @param resolver the resolver that locates each filter's column
+     * @return {@code true} if some filter proves that the partition holds no match
+     */
+    private boolean canPrune(String name, int index, PartitionRef partition, List<Predicate> filters,
+                             ColumnResolver resolver) {
+        for (var filter : filters) {
+            var column = resolver.resolve(filter.column());
+            var statistics = partition.partition().chunks().get(column.column()).statistics();
+            boolean skip = PartitionPruner.canPrune(column.type(), statistics, filter.comparison(),
+                    filter.constant());
             LOGGER.debug("table={} column={} comparison={} const={} partition={} min={} max={} decision={}",
-                    StorageEngine.clean(statement.tableName()),
-                    StorageEngine.clean(predicate.columnName()),
-                    predicate.comparison(),
-                    StorageEngine.clean(predicate.constant()),
-                    total,
+                    StorageEngine.clean(name),
+                    StorageEngine.clean(filter.column().name()),
+                    filter.comparison(),
+                    StorageEngine.clean(filter.constant()),
+                    index,
                     StorageEngine.clean(statistics.min()),
                     StorageEngine.clean(statistics.max()),
                     skip ? "PRUNED" : "READ");
-            total++;
             if (skip) {
-                pruned++;
-            } else {
-                surviving.add(partition);
+                return true;
             }
         }
-        Operator scan = new ScanOperator(columns, surviving);
-        Operator root = new FilterOperator(scan, columnIndex, type, predicate.comparison(),
-                predicate.constant());
-        return new QueryPlan(root, new ScanStats(total, surviving.size(), pruned));
+        return false;
     }
 
     /**
@@ -128,10 +178,10 @@ public final class Planner {
     }
 
     /**
-     * Resolves a predicate column name to its schema index.
+     * Resolves a column name to its schema index.
      *
      * @param columns the table schema
-     * @param columnName the predicate column
+     * @param columnName the column
      * @return the zero-based column index
      * @throws IllegalArgumentException if the column is unknown
      */

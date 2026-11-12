@@ -43,7 +43,7 @@ class StorageEngineIT {
      */
     private List<Object[]> select(StorageEngine engine, String table, String column,
                                   Comparison comparison, Object value) {
-        var statement = new SelectStatement(table, Optional.of(new Predicate(column, comparison, value)));
+        var statement = TestStatements.select(table, Optional.of(new Predicate(column, comparison, value)));
         new Binder(engine).bind(statement);
         var plan = new Planner(engine).plan(statement);
         var rows = new ArrayList<Object[]>();
@@ -54,7 +54,7 @@ class StorageEngineIT {
         } finally {
             plan.root().close();
         }
-        lastPlanStats = plan.stats();
+        lastPlanStats = plan.stats().getFirst();
         return rows;
     }
 
