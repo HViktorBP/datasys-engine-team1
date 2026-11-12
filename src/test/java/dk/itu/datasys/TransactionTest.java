@@ -41,7 +41,7 @@ class TransactionTest {
     }
 
     List<Long> ids(StorageEngine engine) {
-        return drain(new Planner(engine).plan(new SelectStatement("t", Optional.empty())).root());
+        return drain(new Planner(engine).plan(TestStatements.select("t", Optional.empty())).root());
     }
 
     List<Long> drain(Operator root) {
@@ -153,13 +153,13 @@ class TransactionTest {
         var e = empty();
         copy(e, "1,A,1.0\n2,B,2.0\n");
         var captured = e.requireTable("t");
-        var statement = new SelectStatement("t", Optional.empty());
+        var statement = TestStatements.select("t", Optional.empty());
         var plan = new Planner(e).plan(statement);
         copy(e, "3,C,3.0\n");
         assertEquals(List.of(1L, 2L), drain(plan.root()));
-        assertEquals(List.of(1L, 2L), drain(new Planner(e).plan(statement, captured).root()));
+        assertEquals(List.of(1L, 2L), drain(new Planner(e).plan(statement, List.of(captured)).root()));
         assertEquals(List.of(1L, 2L, 3L), ids(e));
-        new Binder(e).bind(new DeleteStatement("t", where(1)), captured);
+        new Binder(e).bind(new DeleteStatement("t", where(1)), List.of(captured));
         assertThrows(UnsupportedOperationException.class, () -> captured.current().files().clear());
         assertThrows(UnsupportedOperationException.class,
                 () -> captured.files().getFirst().partitions().getFirst().chunks().clear());
@@ -325,7 +325,7 @@ class TransactionTest {
                     default -> 0.0;
                 };
                 var predicate = Optional.of(new Predicate(column, comparison, constant));
-                var select = new SelectStatement("t", predicate);
+                var select = TestStatements.select("t", predicate);
                 new Binder(e).bind(select);
                 var matches = drain(new Planner(e).plan(select).root());
                 var expected = ids(e).stream().filter(id -> !matches.contains(id)).toList();

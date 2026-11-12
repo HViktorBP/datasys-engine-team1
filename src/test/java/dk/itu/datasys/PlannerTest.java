@@ -2,10 +2,12 @@ package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,8 +33,8 @@ class PlannerTest {
         try {
             MDC.put("sessionId", session);
             MDC.put("statementNumber", "7");
-            var plan = new Planner(engine).plan(new SelectStatement("unfiltered,\"table\n", Optional.empty()));
-            assertEquals(new ScanStats(4, 4, 0), plan.stats());
+            var plan = new Planner(engine).plan(TestStatements.select("unfiltered,\"table\n", Optional.empty()));
+            assertEquals(List.of(new ScanStats(4, 4, 0)), plan.stats());
             var records = Files.readAllLines(Path.of("logs/engine.log")).stream()
                     .map(line -> line.split(",", -1))
                     .filter(fields -> fields[1].equals(session)).toList();
@@ -61,8 +63,8 @@ class PlannerTest {
         try {
             MDC.put("sessionId", session);
             MDC.put("statementNumber", "1");
-            var plan = new Planner(engine).plan(new SelectStatement("empty", Optional.empty()));
-            assertEquals(new ScanStats(0, 0, 0), plan.stats());
+            var plan = new Planner(engine).plan(TestStatements.select("empty", Optional.empty()));
+            assertEquals(List.of(new ScanStats(0, 0, 0)), plan.stats());
             assertTrue(Files.readAllLines(Path.of("logs/engine.log")).stream()
                     .noneMatch(line -> line.split(",", -1)[1].equals(session)));
         } finally {
@@ -88,9 +90,38 @@ class PlannerTest {
         engine.createTable("trips", schema);
         engine.copyFile("trips", csv.toString());
         var planner = new Planner(engine);
-        var plan = planner.plan(new SelectStatement("trips", Optional.of(
+        var plan = planner.plan(TestStatements.select("trips", Optional.of(
                 new Predicate("distance", Comparison.GREATER_THAN, 200L))));
-        assertEquals(new ScanStats(4, 1, 3), plan.stats());
+        assertEquals(List.of(new ScanStats(4, 1, 3)), plan.stats());
+
+        var twoFilters = planner.plan((SelectStatement) new SqlParser().parse(
+                "SELECT * FROM trips WHERE distance > 50 AND trips.distance < 200;").getFirst());
+        assertEquals(List.of(new ScanStats(4, 2, 2)), twoFilters.stats());
+        assertEquals(List.of(88L, 95L, 140L, 187L), distances(twoFilters.root()));
+    }
+
+    @Test
+    void rejectsJoinsUntilTheJoinPlannerExists() {
+        var engine = new StorageEngine(dir);
+        engine.createTable("a", List.of(new ColumnSpec("x", ColumnType.LONG)));
+        engine.createTable("b", List.of(new ColumnSpec("y", ColumnType.LONG)));
+        var statement = (SelectStatement) new SqlParser().parse("SELECT * FROM a, b WHERE x = y;").getFirst();
+        var error = assertThrows(IllegalArgumentException.class, () -> new Planner(engine).plan(statement));
+        assertEquals("Joins are not supported yet", error.getMessage());
+    }
+
+    static List<Long> distances(Operator root) {
+        var distances = new ArrayList<Long>();
+        root.open();
+        try {
+            Object[] row;
+            while ((row = root.next()) != null) {
+                distances.add((Long) row[1]);
+            }
+        } finally {
+            root.close();
+        }
+        return distances;
     }
 
     @Test
@@ -100,11 +131,11 @@ class PlannerTest {
         engine.copyFile("trips", "src/test/resources/trips.csv");
         var planner = new Planner(engine);
 
-        var filtered = planner.plan(new SelectStatement("trips", Optional.of(
+        var filtered = planner.plan(TestStatements.select("trips", Optional.of(
                 new Predicate("distance", Comparison.GREATER_THAN, 100L))));
         assertInstanceOf(FilterOperator.class, filtered.root());
-        var unfiltered = planner.plan(new SelectStatement("trips", Optional.empty()));
+        var unfiltered = planner.plan(TestStatements.select("trips", Optional.empty()));
         assertInstanceOf(ScanOperator.class, unfiltered.root());
-        assertEquals(new ScanStats(4, 4, 0), unfiltered.stats());
+        assertEquals(List.of(new ScanStats(4, 4, 0)), unfiltered.stats());
     }
 }
