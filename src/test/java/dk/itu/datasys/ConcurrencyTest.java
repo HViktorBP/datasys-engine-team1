@@ -72,7 +72,7 @@ class ConcurrencyTest {
 
     /** Returns the ids of {@code table}'s current version in scan order. */
     static List<Long> ids(StorageEngine engine, String table) {
-        return drain(new Planner(engine).plan(new SelectStatement(table, Optional.empty())).root());
+        return drain(new Planner(engine).plan(TestStatements.select(table, Optional.empty())).root());
     }
 
     /** Opens, drains and closes an operator, returning the id column. */
@@ -143,7 +143,7 @@ class ConcurrencyTest {
     @Test void openScanReturnsItsPinnedRowsAfterADelete() {
         var engine = engine("t");
         copy(engine, "t", "1,A,1.0\n2,B,2.0\n3,C,3.0\n4,D,4.0\n");
-        var scan = new Planner(engine).plan(new SelectStatement("t", Optional.empty())).root();
+        var scan = new Planner(engine).plan(TestStatements.select("t", Optional.empty())).root();
         scan.open();
         engine.delete("t", idIs(1));
         assertEquals(List.of(1L, 2L, 3L, 4L), rest(scan));
@@ -153,7 +153,7 @@ class ConcurrencyTest {
     @Test void openScanKeepsItsFilesAcrossSeveralCommits() {
         var engine = engine("t");
         copy(engine, "t", "1,A,1.0\n2,B,2.0\n3,C,3.0\n4,D,4.0\n");
-        var scan = new Planner(engine).plan(new SelectStatement("t", Optional.empty())).root();
+        var scan = new Planner(engine).plan(TestStatements.select("t", Optional.empty())).root();
         scan.open();
         // Three commits replace or remove every partition the scan pinned before it reads them.
         engine.delete("t", idIs(1));

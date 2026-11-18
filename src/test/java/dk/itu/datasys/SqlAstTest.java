@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 class SqlAstTest {
     @Test void recordsProvideStructuralEquality() {
         var predicate = new Predicate("distance", Comparison.GREATER_THAN, 100L);
-        assertEquals(new SelectStatement("trips", Optional.of(predicate)),
-                new SelectStatement("trips", Optional.of(predicate)));
+        assertEquals(TestStatements.select("trips", Optional.of(predicate)),
+                TestStatements.select("trips", Optional.of(predicate)));
         assertEquals(new CopyStatement("trips", "trips.csv"),
                 new CopyStatement("trips", "trips.csv"));
     }

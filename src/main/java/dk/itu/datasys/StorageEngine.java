@@ -31,7 +31,7 @@ import org.slf4j.MDC;
  * durability is not promised.
  *
  * @author Team 1
- * @version 0.8
+ * @version 0.10
  * @see ColumnSpec
  * @see Planner
  * @since 0.2
@@ -259,11 +259,11 @@ public final class StorageEngine {
      *                           replaces; the table is left unchanged and the delete can be rerun
      * @throws UncheckedIOException if reading, staging or publication fails
      * @since 0.7
-     * @version 0.8
+     * @version 0.10
      */
     public DeleteResult delete(String tableName, Optional<Predicate> where) {
         var base = requireTable(tableName);
-        new Binder(this).bind(new DeleteStatement(tableName, where), base);
+        new Binder(this).bind(new DeleteStatement(tableName, where), List.of(base));
         return delete(base, where);
     }
 
@@ -291,7 +291,7 @@ public final class StorageEngine {
         boolean committed = false;
         List<Path> staged = new ArrayList<>();
         Map<WriteSet.PartitionKey, List<DataFile>> replacements = new LinkedHashMap<>();
-        int index = where.isPresent() ? Planner.columnIndex(base.columns(), where.orElseThrow().columnName()) : -1;
+        int index = where.isPresent() ? Planner.columnIndex(base.columns(), where.orElseThrow().column().name()) : -1;
         try {
             for (var file : base.files()) {
                 for (var partition : file.partitions()) {
@@ -489,6 +489,25 @@ public final class StorageEngine {
             if (table == null) throw new IllegalArgumentException("Unknown table: " + name);
             return table;
         }
+    }
+
+    /**
+     * Pins one table snapshot per {@code FROM} entry at statement start.
+     *
+     * <p>Each distinct table name is looked up once, so both sides of a self-join such as
+     * {@code FROM customers c1, customers c2} read the same snapshot.
+     *
+     * @param tables the {@code FROM} list
+     * @return the snapshot of each entry, aligned with {@code tables}
+     * @throws IllegalArgumentException if a table is unknown
+     * @since 0.10
+     * @version 0.10
+     */
+    List<Table> requireTables(List<TableRef> tables) {
+        Map<String, Table> pinned = new HashMap<>();
+        return tables.stream()
+                .map(ref -> pinned.computeIfAbsent(ref.tableName(), this::requireTable))
+                .toList();
     }
 
     /**

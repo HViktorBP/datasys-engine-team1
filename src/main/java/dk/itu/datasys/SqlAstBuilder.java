@@ -2,13 +2,17 @@ package dk.itu.datasys;
 
 import dk.itu.datasys.sql.SqlBaseVisitor;
 import dk.itu.datasys.sql.SqlParser.ColumnDefContext;
+import dk.itu.datasys.sql.SqlParser.ColumnRefContext;
 import dk.itu.datasys.sql.SqlParser.CopyContext;
 import dk.itu.datasys.sql.SqlParser.DeleteContext;
 import dk.itu.datasys.sql.SqlParser.CreateTableContext;
+import dk.itu.datasys.sql.SqlParser.FilterContext;
+import dk.itu.datasys.sql.SqlParser.JoinContext;
 import dk.itu.datasys.sql.SqlParser.LiteralContext;
-import dk.itu.datasys.sql.SqlParser.PredicateContext;
 import dk.itu.datasys.sql.SqlParser.ScriptContext;
 import dk.itu.datasys.sql.SqlParser.SelectContext;
+import dk.itu.datasys.sql.SqlParser.TableRefContext;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -19,7 +23,7 @@ import org.antlr.v4.runtime.Token;
  *
  * @author Team 1
  * @since 0.3
- * @version 0.7
+ * @version 0.10
  */
 final class SqlAstBuilder extends SqlBaseVisitor<Object> {
     /** Creates an abstract syntax tree builder. */
@@ -60,24 +64,61 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
                 unquote(context.STRING_LITERAL().getText()));
     }
 
-    /** {@inheritDoc} */
+    /**
+     * Builds a select statement and sorts each {@code WHERE} condition into the filter list or
+     * the join list, keeping source order within each list.
+     *
+     * @param context the select parse-tree context
+     * @return the {@link SelectStatement}
+     * @version 0.10
+     */
     @Override public Object visitSelect(SelectContext context) {
-        var where = context.predicate() == null
-                ? Optional.<Predicate>empty()
-                : Optional.of((Predicate) visit(context.predicate()));
-        return new SelectStatement(context.IDENTIFIER().getText(), where);
+        var tables = context.tableRef().stream()
+                .map(this::visit)
+                .map(TableRef.class::cast)
+                .toList();
+        var filters = new ArrayList<Predicate>();
+        var joins = new ArrayList<JoinPredicate>();
+        if (context.condition() != null) {
+            for (var predicate : context.condition().predicate()) {
+                switch (visit(predicate)) {
+                    case Predicate filter -> filters.add(filter);
+                    case JoinPredicate join -> joins.add(join);
+                    default -> throw new IllegalStateException("Unexpected predicate");
+                }
+            }
+        }
+        return new SelectStatement(tables, filters, joins);
+    }
+
+    /**
+     * Builds one {@code FROM}-list entry.
+     *
+     * @param context the table-reference parse-tree context
+     * @return the {@link TableRef}
+     * @since 0.10
+     */
+    @Override public Object visitTableRef(TableRefContext context) {
+        var alias = Optional.ofNullable(context.alias).map(Token::getText);
+        return new TableRef(context.table.getText(), alias);
     }
 
     /** {@inheritDoc} */
     @Override public Object visitDelete(DeleteContext context) {
-        var where = context.predicate() == null
+        var where = context.filter() == null
                 ? Optional.<Predicate>empty()
-                : Optional.of((Predicate) visit(context.predicate()));
+                : Optional.of((Predicate) visit(context.filter()));
         return new DeleteStatement(context.IDENTIFIER().getText(), where);
     }
 
-    /** {@inheritDoc} */
-    @Override public Object visitPredicate(PredicateContext context) {
+    /**
+     * Builds a column-to-constant comparison.
+     *
+     * @param context the filter parse-tree context
+     * @return the {@link Predicate}
+     * @since 0.10
+     */
+    @Override public Object visitFilter(FilterContext context) {
         var comparison = switch (context.comparison.getText()) {
             case "=" -> Comparison.EQUALS;
             case "<" -> Comparison.LESS_THAN;
@@ -85,8 +126,31 @@ final class SqlAstBuilder extends SqlBaseVisitor<Object> {
             default -> throw new IllegalStateException(
                     "Unsupported comparison: " + context.comparison.getText());
         };
-        return new Predicate(context.IDENTIFIER().getText(), comparison,
+        return new Predicate((ColumnRef) visit(context.columnRef()), comparison,
                 visit(context.literal()));
+    }
+
+    /**
+     * Builds a column-to-column equality.
+     *
+     * @param context the join parse-tree context
+     * @return the {@link JoinPredicate}
+     * @since 0.10
+     */
+    @Override public Object visitJoin(JoinContext context) {
+        return new JoinPredicate((ColumnRef) visit(context.left), (ColumnRef) visit(context.right));
+    }
+
+    /**
+     * Builds a possibly qualified column reference.
+     *
+     * @param context the column-reference parse-tree context
+     * @return the {@link ColumnRef}
+     * @since 0.10
+     */
+    @Override public Object visitColumnRef(ColumnRefContext context) {
+        var qualifier = Optional.ofNullable(context.qualifier).map(Token::getText);
+        return new ColumnRef(qualifier, context.name.getText());
     }
 
     /**

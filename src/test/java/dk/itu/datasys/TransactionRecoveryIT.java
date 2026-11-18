@@ -57,7 +57,7 @@ class TransactionRecoveryIT {
         try (var paths = Files.list(dir.resolve("catalog"))) {
             assertTrue(paths.allMatch(path -> path.toString().endsWith(".json")));
         }
-        var plan = new Planner(recovered).plan(new SelectStatement("t", Optional.empty()));
+        var plan = new Planner(recovered).plan(TestStatements.select("t", Optional.empty()));
         var rows = new ArrayList<Long>();
         try {
             plan.root().open();

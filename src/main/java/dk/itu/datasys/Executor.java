@@ -4,6 +4,7 @@ import dk.itu.datasys.CatalogStore.Table;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -12,13 +13,15 @@ import org.slf4j.MDC;
  * Binds, plans, and executes statements against a {@link StorageEngine}.
  *
  * <p>{@code CREATE TABLE}, {@code COPY} and {@code DELETE} call storage directly.
- * Each table-dependent statement captures immutable metadata before binding. {@code SELECT}
- * drains a planned Volcano pipeline and writes headerless CSV rows. A changing statement's
- * summary reports the version it actually committed, which is later than its base's next version
- * when the statement was rebased onto a concurrent commit.
+ * Each table-dependent statement captures immutable metadata before binding; a {@code SELECT}
+ * pins one snapshot per table at statement start. {@code SELECT} drains a planned Volcano
+ * pipeline and writes headerless CSV rows. A changing statement's summary reports the version it
+ * actually committed, which is later than its base's next version when the statement was rebased
+ * onto a concurrent commit. A {@code SELECT} summary lists the exposed name and the read version
+ * of each {@code FROM} entry, separated by {@code ;}.
  *
  * @author Team 1
- * @version 0.8
+ * @version 0.10
  * @since 0.4
  */
 public final class Executor {
@@ -88,13 +91,14 @@ public final class Executor {
      * Describes a successful statement for the shared diagnostic log.
      *
      * @param kind the statement kind used in logs
-     * @param table the unsanitized table name
-     * @param version the committed or read table version
+     * @param table the unsanitized table name, or the {@code ;}-separated {@code FROM} list
+     * @param version the committed or read table version, or the {@code ;}-separated read
+     *                versions of the {@code FROM} list
      * @param counts the statement-specific counters as ASCII {@code key=value} pairs
      * @since 0.7
-     * @version 0.7
+     * @version 0.10
      */
-    private record Summary(String kind, String table, long version, String counts) { }
+    private record Summary(String kind, String table, String version, String counts) { }
 
     /**
      * Captures metadata, binds and executes one statement, and returns its summary.
@@ -107,34 +111,39 @@ public final class Executor {
      * @throws ArithmeticException if a changing statement would overflow its table version
      * @throws ConflictException if a changing statement loses a write conflict
      * @since 0.7
-     * @version 0.8
+     * @version 0.10
      */
     private Summary execute(Statement statement, PrintStream rowsOut) {
-        var snapshot = switch (statement) {
-            case CreateTableStatement ignored -> null;
-            case CopyStatement copy -> engine.requireTable(copy.tableName());
-            case SelectStatement select -> engine.requireTable(select.tableName());
-            case DeleteStatement delete -> engine.requireTable(delete.tableName());
+        var snapshots = switch (statement) {
+            case CreateTableStatement ignored -> List.<Table>of();
+            case CopyStatement copy -> List.of(engine.requireTable(copy.tableName()));
+            case SelectStatement select -> engine.requireTables(select.tables());
+            case DeleteStatement delete -> List.of(engine.requireTable(delete.tableName()));
         };
-        binder.bind(statement, snapshot);
+        binder.bind(statement, snapshots);
         return switch (statement) {
             case CreateTableStatement create -> {
                 engine.createTable(create.tableName(), create.columns());
-                yield new Summary("CREATE_TABLE", create.tableName(), 0, "rowsOut=0");
+                yield new Summary("CREATE_TABLE", create.tableName(), "0", "rowsOut=0");
             }
             case CopyStatement copy -> {
-                var result = engine.copyFile(snapshot, copy.csvFilePath());
-                yield new Summary("COPY", copy.tableName(), result.version(),
+                var result = engine.copyFile(snapshots.getFirst(), copy.csvFilePath());
+                yield new Summary("COPY", copy.tableName(), String.valueOf(result.version()),
                         "rows=" + result.rows() + " partitions=" + result.partitions());
             }
             case SelectStatement select -> {
-                int rows = executeSelect(select, snapshot, rowsOut);
-                yield new Summary("SELECT", select.tableName(), snapshot.current().tableVersion(),
-                        "rowsOut=" + rows);
+                int rows = executeSelect(select, snapshots, rowsOut);
+                String tables = select.tables().stream()
+                        .map(TableRef::exposedName)
+                        .collect(Collectors.joining(";"));
+                String versions = snapshots.stream()
+                        .map(table -> String.valueOf(table.current().tableVersion()))
+                        .collect(Collectors.joining(";"));
+                yield new Summary("SELECT", tables, versions, "rowsOut=" + rows);
             }
             case DeleteStatement delete -> {
-                var result = engine.delete(snapshot, delete.where());
-                yield new Summary("DELETE", delete.tableName(), result.version(),
+                var result = engine.delete(snapshots.getFirst(), delete.where());
+                yield new Summary("DELETE", delete.tableName(), String.valueOf(result.version()),
                         "rowsDeleted=" + result.rowsDeleted()
                                 + " partitionsRewritten=" + result.partitionsRewritten()
                                 + " partitionsCarried=" + result.partitionsCarried()
@@ -146,16 +155,21 @@ public final class Executor {
     /**
      * Plans and drains a select pipeline, logging partition counts and writing rows as CSV.
      *
+     * <p>Logs one partition-count line per {@code FROM} entry, under its exposed name.
+     *
      * @param statement the select statement
-     * @param snapshot the table metadata captured before binding
+     * @param snapshots the metadata of each {@code FROM} entry captured before binding
      * @param rowsOut the CSV destination
      * @return the number of emitted rows
      */
-    private int executeSelect(SelectStatement statement, Table snapshot, PrintStream rowsOut) {
-        var plan = planner.plan(statement, snapshot);
-        LOGGER.debug("table={} partitionsTotal={} partitionsRead={} partitionsPruned={}",
-                StorageEngine.clean(statement.tableName()), plan.stats().partitionsTotal(),
-                plan.stats().partitionsRead(), plan.stats().partitionsPruned());
+    private int executeSelect(SelectStatement statement, List<Table> snapshots, PrintStream rowsOut) {
+        var plan = planner.plan(statement, snapshots);
+        for (int i = 0; i < plan.stats().size(); i++) {
+            var stats = plan.stats().get(i);
+            LOGGER.debug("table={} partitionsTotal={} partitionsRead={} partitionsPruned={}",
+                    StorageEngine.clean(statement.tables().get(i).exposedName()),
+                    stats.partitionsTotal(), stats.partitionsRead(), stats.partitionsPruned());
+        }
         Operator root = plan.root();
         try {
             root.open();

@@ -14,13 +14,17 @@ import org.slf4j.LoggerFactory;
 /**
  * Parses the supported SQL subset into immutable statement objects.
  *
- * <p>The grammar accepts {@code CREATE TABLE}, {@code COPY ... FROM}, and {@code SELECT *} with
- * one optional {@code WHERE} comparison using {@code =}, {@code <}, or {@code >}. Keywords are
- * case-insensitive, identifier spelling is preserved, and string literals are single-quoted ASCII
- * without escapes.
+ * <p>The grammar accepts {@code CREATE TABLE}, {@code COPY ... FROM}, {@code DELETE FROM} with
+ * one optional column-to-constant comparison, and {@code SELECT *} over a comma-separated
+ * {@code FROM} list. Each {@code FROM} entry may carry an alias ({@code customers c1}). A
+ * {@code SELECT} may have a {@code WHERE} conjunction joined by {@code AND}; each condition
+ * compares a column with a constant using {@code =}, {@code <}, or {@code >}, or a column with a
+ * column using {@code =}. Columns may be qualified ({@code c1.c_city}). {@code OR} and parentheses
+ * are not supported. Keywords, including {@code AND}, are reserved and case-insensitive,
+ * identifier spelling is preserved, and string literals are single-quoted ASCII without escapes.
  *
  * @author Team 1
- * @version 0.3
+ * @version 0.10
  * @see Statement
  * @since 0.3
  */
