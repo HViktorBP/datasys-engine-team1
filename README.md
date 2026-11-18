@@ -43,9 +43,24 @@ argument sets the maximum partition size (default: 1,000). This setting applies
 to future imports; existing data retains its persisted partition boundaries.
 The front door executes
 `parse → bind → plan → open/next/close → CSV`; it streams query results. Exercise 5
-removed the test-only `StorageEngine.select` materializing API, its scan-statistics
-getter, and `SqlPrinter`. `QueryPlan.stats()` and planner `decision=` records
-describe partition activity.
+removed the test-only `StorageEngine.select` materializing API and its scan-statistics
+getter. `QueryPlan.stats()` (one entry per `FROM` table) and planner `decision=`
+records describe partition activity.
+
+`SELECT *` joins several tables with an implicit-join `FROM` list and `AND`:
+
+```sql
+SELECT * FROM orders, customers, products
+WHERE o_custname = c_name AND o_prodname = p_name AND c_city = 'Copenhagen';
+SELECT * FROM customers c1, customers c2 WHERE c1.c_city = c2.c_city;
+```
+
+Tables are hash-joined left-deep in `FROM`-list order, with each table's filters
+below the joins; every table after the first needs a join predicate to a table
+before it. Unqualified column names must belong to exactly one table; aliases and
+qualified names (`c1.c_city`) allow self-joins. Each join logs `rowsBuild`, `keys`,
+`rowsProbe` and `rowsOut`. Rows come out in probe order, so compare sorted output.
+See the [Exercise 10 notes](docs/exercise-10.md).
 
 Use one engine per directory. Statements may run concurrently within that engine:
 each works on the version it pinned when it started, and its commit is replayed on
@@ -67,6 +82,7 @@ when an engine opens the directory, so a running statement never loses a version
 it pinned; retired files stay on disk until the next start. Generated state belongs
 under the Git-ignored `data/` directory. See the
 [transaction design](docs/transaction-design.md),
+[Exercise 10 notes](docs/exercise-10.md),
 [Exercise 8 release notes](docs/exercise-8.md),
 [Exercise 7 release notes](docs/exercise-7.md),
 [storage design](docs/storage-design.md),

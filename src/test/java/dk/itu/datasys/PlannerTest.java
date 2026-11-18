@@ -1,5 +1,6 @@
 package dk.itu.datasys;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -100,14 +101,107 @@ class PlannerTest {
         assertEquals(List.of(88L, 95L, 140L, 187L), distances(twoFilters.root()));
     }
 
+    StorageEngine testbed(int maxRowsPerPartition) {
+        var engine = new StorageEngine(dir, maxRowsPerPartition);
+        engine.createTable("orders", List.of(
+                new ColumnSpec("o_orderkey", ColumnType.LONG),
+                new ColumnSpec("o_custname", ColumnType.STRING),
+                new ColumnSpec("o_prodname", ColumnType.STRING),
+                new ColumnSpec("o_quantity", ColumnType.LONG)));
+        engine.createTable("products", List.of(
+                new ColumnSpec("p_name", ColumnType.STRING),
+                new ColumnSpec("p_price", ColumnType.DOUBLE)));
+        engine.createTable("customers", List.of(
+                new ColumnSpec("c_name", ColumnType.STRING),
+                new ColumnSpec("c_city", ColumnType.STRING)));
+        engine.createTable("cities", List.of(
+                new ColumnSpec("ct_city", ColumnType.STRING),
+                new ColumnSpec("ct_country", ColumnType.STRING),
+                new ColumnSpec("ct_population", ColumnType.LONG)));
+        for (var table : List.of("orders", "products", "customers", "cities")) {
+            engine.copyFile(table, "src/test/resources/joins/" + table + ".csv");
+        }
+        return engine;
+    }
+
+    /** Plans and drains a query, returning its rows and the join summaries it logged. */
+    record Run(QueryPlan plan, List<Object[]> rows, List<String> joinLogs) { }
+
+    Run run(StorageEngine engine, String sql) throws Exception {
+        var statement = (SelectStatement) new SqlParser().parse(sql).getFirst();
+        String session = UUID.randomUUID().toString();
+        var previous = MDC.getCopyOfContextMap();
+        try {
+            MDC.put("sessionId", session);
+            var plan = new Planner(engine).plan(statement);
+            var rows = HashJoinOperatorTest.drain(plan.root());
+            var joinLogs = Files.readAllLines(Path.of("logs/engine.log")).stream()
+                    .map(line -> line.split(",", -1))
+                    .filter(fields -> fields[1].equals(session) && fields[5].equals("HashJoinOperator"))
+                    .map(fields -> fields[6])
+                    .toList();
+            return new Run(plan, rows, joinLogs);
+        } finally {
+            if (previous == null) MDC.clear();
+            else MDC.setContextMap(previous);
+        }
+    }
+
     @Test
-    void rejectsJoinsUntilTheJoinPlannerExists() {
-        var engine = new StorageEngine(dir);
-        engine.createTable("a", List.of(new ColumnSpec("x", ColumnType.LONG)));
-        engine.createTable("b", List.of(new ColumnSpec("y", ColumnType.LONG)));
-        var statement = (SelectStatement) new SqlParser().parse("SELECT * FROM a, b WHERE x = y;").getFirst();
+    void joinsFourTablesLeftDeepInFromListOrder() throws Exception {
+        var run = run(testbed(1000), """
+                SELECT * FROM orders, customers, products, cities
+                WHERE o_custname = c_name AND o_prodname = p_name AND c_city = ct_city;""");
+        assertInstanceOf(HashJoinOperator.class, run.plan().root());
+        assertEquals(List.of(
+                "tables=orders;customers rowsBuild=4 keys=3 rowsProbe=3 rowsOut=4",
+                "tables=orders;customers;products rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4",
+                "tables=orders;customers;products;cities rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4"),
+                run.joinLogs());
+        assertArrayEquals(new Object[]{100L, "Anna", "Bike", 1L, "Anna", "Copenhagen",
+                        "Bike", 2999.0, "Copenhagen", "Denmark", 1400000L},
+                run.rows().stream().filter(row -> row[0].equals(100L)).findFirst().orElseThrow());
+        assertEquals(4, run.rows().size());
+    }
+
+    @Test
+    void pushesFiltersBelowTheJoinsAndPrunesPerTable() throws Exception {
+        var run = run(testbed(1), """
+                SELECT * FROM orders, customers, products
+                WHERE o_custname = c_name AND o_prodname = p_name AND c_city = 'Copenhagen';""");
+        assertEquals(List.of(new ScanStats(4, 4, 0), new ScanStats(3, 2, 1), new ScanStats(2, 2, 0)),
+                run.plan().stats());
+        assertEquals(List.of(
+                "tables=orders;customers rowsBuild=4 keys=3 rowsProbe=2 rowsOut=3",
+                "tables=orders;customers;products rowsBuild=3 keys=2 rowsProbe=2 rowsOut=3"),
+                run.joinLogs());
+        assertEquals(3, run.rows().size());
+    }
+
+    @Test
+    void appliesFurtherConnectingPredicatesAsAFilterAboveTheJoin() throws Exception {
+        var engine = testbed(1000);
+        assertEquals(5, run(engine, "SELECT * FROM customers c1, customers c2 "
+                + "WHERE c1.c_city = c2.c_city;").rows().size());
+        var run = run(engine, "SELECT * FROM customers c1, customers c2 "
+                + "WHERE c1.c_city = c2.c_city AND c2.c_name = c1.c_name;");
+        assertInstanceOf(ColumnEqualityFilterOperator.class, run.plan().root());
+        assertEquals(List.of("tables=c1;c2 rowsBuild=3 keys=2 rowsProbe=3 rowsOut=5"), run.joinLogs());
+        assertEquals(3, run.rows().size());
+        for (var row : run.rows()) {
+            assertEquals(row[0], row[2]);
+        }
+    }
+
+    @Test
+    void rejectsATableWithoutAJoinPredicateToTheTablesBeforeIt() {
+        var engine = testbed(1000);
+        var statement = (SelectStatement) new SqlParser().parse("""
+                SELECT * FROM orders, cities, customers
+                WHERE o_custname = c_name AND c_city = ct_city;""").getFirst();
         var error = assertThrows(IllegalArgumentException.class, () -> new Planner(engine).plan(statement));
-        assertEquals("Joins are not supported yet", error.getMessage());
+        assertEquals("No join predicate connects cities to the tables before it; reorder the FROM list",
+                error.getMessage());
     }
 
     static List<Long> distances(Operator root) {
