@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
  * type. Memory is linear in the build side and constant in the probe side.
  *
  * @author Team 1
- * @version 0.10
+ * @version 0.11
  * @since 0.10
  */
 public final class HashJoinOperator implements Operator {
@@ -34,8 +34,12 @@ public final class HashJoinOperator implements Operator {
     private final int buildKey;
     /** Position of the join key in a probe row. */
     private final int probeKey;
-    /** The joined tables, such as {@code orders;customers}, for the summary log line. */
+    /** The joined tables, such as {@code orders,customers}, for the summary log line. */
     private final String tables;
+    /** Planner estimate of this join's output cardinality. */
+    private final long estRows;
+    /** 1-based index of this join in the plan, bottom-up. */
+    private final int join;
     /** Build rows by join key. */
     private Map<Object, List<Object[]>> buildMap = new HashMap<>();
     /** The probe row whose matches are being emitted. */
@@ -61,13 +65,20 @@ public final class HashJoinOperator implements Operator {
      * @param buildKey the position of the join key in a build row
      * @param probeKey the position of the join key in a probe row
      * @param tables the joined tables, logged by {@link #close()}
+     * @param estRows the planner's estimated output cardinality
+     * @param join the 1-based join index in the plan
+     * @since 0.10
+     * @version 0.11
      */
-    HashJoinOperator(Operator build, Operator probe, int buildKey, int probeKey, String tables) {
+    HashJoinOperator(Operator build, Operator probe, int buildKey, int probeKey, String tables,
+                     long estRows, int join) {
         this.build = build;
         this.probe = probe;
         this.buildKey = buildKey;
         this.probeKey = probeKey;
         this.tables = tables;
+        this.estRows = estRows;
+        this.join = join;
     }
 
     /**
@@ -116,9 +127,9 @@ public final class HashJoinOperator implements Operator {
     /**
      * {@inheritDoc}
      *
-     * <p>Releases the hash table and then logs {@code tables}, {@code rowsBuild}, {@code keys},
-     * {@code rowsProbe} and {@code rowsOut} at debug. Because the children close first, the joins
-     * of a left-deep plan log from the bottom up.
+     * <p>Releases the hash table and then logs {@code join}, {@code tables}, {@code estRows},
+     * {@code rowsBuild}, {@code keys}, {@code rowsProbe} and {@code rowsOut} at debug. Because the
+     * children close first, the joins of a left-deep plan log from the bottom up.
      */
     @Override
     public void close() {
@@ -128,8 +139,8 @@ public final class HashJoinOperator implements Operator {
             probe.close();
         }
         buildMap = new HashMap<>();
-        LOGGER.debug("tables={} rowsBuild={} keys={} rowsProbe={} rowsOut={}",
-                StorageEngine.clean(tables), rowsBuild, keys, rowsProbe, rowsOut);
+        LOGGER.debug("join={} tables={} estRows={} rowsBuild={} keys={} rowsProbe={} rowsOut={}",
+                join, StorageEngine.clean(tables), estRows, rowsBuild, keys, rowsProbe, rowsOut);
     }
 
     /**

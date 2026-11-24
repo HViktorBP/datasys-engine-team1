@@ -10,13 +10,15 @@ tests with `mvn -B verify`. Packaging produces the self-contained
 mvn -B package
 ./engine
 ./engine -c "SELECT * FROM trips WHERE city = 'Odense'"
+./engine -j syntax -c "SELECT * FROM orders, customers WHERE o_custname = c_name"
 ./engine -f script.sql > ours.csv
 ENGINE_JAVA_OPTS=-Xmx64m ./engine -f script.sql
 ```
 
 `-c` accepts SQL with or without a final semicolon; `-f` reads a UTF-8 script
 whose statements end with semicolons. A single positional SQL argument is also
-supported. Scripts stop at the first failure, retain earlier successful
+supported. `-j optimized` (the default) reorders joins by estimated size;
+`-j syntax` keeps the `FROM`-list order from week 10. Scripts stop at the first failure, retain earlier successful
 statements and output, and exit with status 1. Successful execution and help
 exit with status 0. `SELECT` writes headerless CSV to stdout. Diagnostics go to
 stderr and `logs/engine.log`; data and logs are relative to the working directory.
@@ -55,12 +57,15 @@ WHERE o_custname = c_name AND o_prodname = p_name AND c_city = 'Copenhagen';
 SELECT * FROM customers c1, customers c2 WHERE c1.c_city = c2.c_city;
 ```
 
-Tables are hash-joined left-deep in `FROM`-list order, with each table's filters
-below the joins; every table after the first needs a join predicate to a table
-before it. Unqualified column names must belong to exactly one table; aliases and
-qualified names (`c1.c_city`) allow self-joins. Each join logs `rowsBuild`, `keys`,
-`rowsProbe` and `rowsOut`. Rows come out in probe order, so compare sorted output.
-See the [Exercise 10 notes](docs/exercise-10.md).
+Tables are hash-joined left-deep. The default planner estimates intermediate
+sizes from catalog NDV and picks the cheapest connected join; `-j syntax`
+reproduces week 10's `FROM`-list order and always builds on the left. Filters
+sit below the joins. Unqualified column names must belong to exactly one table;
+aliases and qualified names (`c1.c_city`) allow self-joins. Each join logs
+`estRows`, `rowsBuild`, `keys`, `rowsProbe` and `rowsOut`. `SELECT *` columns
+stay in `FROM`-list order. Rows come out in probe order, so compare sorted
+output. See the [optimizer design](docs/optimizer-design.md) and
+[Exercise 10 notes](docs/exercise-10.md).
 
 Use one engine per directory. Statements may run concurrently within that engine:
 each works on the version it pinned when it started, and its commit is replayed on
@@ -81,6 +86,7 @@ directory are outside the supported contract. Unreferenced files are deleted onl
 when an engine opens the directory, so a running statement never loses a version
 it pinned; retired files stay on disk until the next start. Generated state belongs
 under the Git-ignored `data/` directory. See the
+[optimizer design](docs/optimizer-design.md),
 [transaction design](docs/transaction-design.md),
 [Exercise 10 notes](docs/exercise-10.md),
 [Exercise 8 release notes](docs/exercise-8.md),

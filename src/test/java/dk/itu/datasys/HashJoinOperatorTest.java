@@ -25,7 +25,7 @@ class HashJoinOperatorTest {
 
     static HashJoinOperator join(List<Object[]> build, List<Object[]> probe, int buildKey, int probeKey) {
         return new HashJoinOperator(new TestListOperator(build), new TestListOperator(probe),
-                buildKey, probeKey, "t");
+                buildKey, probeKey, "t", 0, 1);
     }
 
     @Test void emitsBuildColumnsThenProbeColumnsOnePerCall() {
@@ -79,17 +79,20 @@ class HashJoinOperatorTest {
         try {
             MDC.put("sessionId", session);
             drain(new HashJoinOperator(new TestListOperator(ORDERS), new TestListOperator(CUSTOMERS),
-                    1, 0, "orders;customers"));
+                    1, 0, "orders;customers", 4, 1));
         } finally {
             if (previous == null) MDC.clear();
             else MDC.setContextMap(previous);
         }
         var messages = Files.readAllLines(Path.of("logs/engine.log")).stream()
                 .map(line -> line.split(",", -1))
-                .filter(fields -> fields[1].equals(session) && fields[5].equals("HashJoinOperator"))
+                .filter(fields -> fields.length == 7 && fields[1].equals(session)
+                        && fields[5].equals("HashJoinOperator"))
                 .map(fields -> fields[6])
                 .toList();
-        assertEquals(List.of("tables=orders;customers rowsBuild=4 keys=3 rowsProbe=3 rowsOut=4"), messages);
+        assertEquals(List.of(
+                "join=1 tables=orders;customers estRows=4 rowsBuild=4 keys=3 rowsProbe=3 rowsOut=4"),
+                messages);
     }
 
     static List<Object[]> drain(Operator operator) {

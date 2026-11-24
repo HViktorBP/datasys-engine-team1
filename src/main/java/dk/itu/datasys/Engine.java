@@ -15,7 +15,7 @@ import org.slf4j.MDC;
  * Command-line SQL front door for the Team 1 query engine.
  *
  * @author Team 1
- * @version 0.5
+ * @version 0.11
  * @since 0.1
  */
 public final class Engine {
@@ -50,7 +50,7 @@ public final class Engine {
      * @param err the stream for usage errors and execution failures
      * @return 0 for help or successful execution, or 1 for an argument, parse, or runtime failure
      * @since 0.4
-     * @version 0.5
+     * @version 0.11
      */
     static int run(String[] args, Path dataDirectory, PrintStream out, PrintStream err) {
         MDC.put("sessionId", UUID.randomUUID().toString());
@@ -61,25 +61,26 @@ public final class Engine {
                 out.print(usage());
                 return 0;
             }
-            String sql;
+            Invocation invocation;
             try {
-                sql = script(args);
+                invocation = invocation(args);
             } catch (IllegalArgumentException error) {
                 LOGGER.error("operation=arguments error={}", StorageEngine.clean(error.getMessage()));
                 err.println(error.getMessage());
                 return 1;
             }
-            if (sql == null) {
+            if (invocation == null) {
                 LOGGER.error("operation=arguments error=Invalid command-line arguments");
                 err.print(usage());
                 return 1;
             }
-            var statements = parseScript(sql, err);
+            var statements = parseScript(invocation.sql(), err);
             if (statements == null) {
                 return 1;
             }
             try {
-                new Executor(new StorageEngine(dataDirectory)).execute(statements, out);
+                new Executor(new StorageEngine(dataDirectory), invocation.mode())
+                        .execute(statements, out);
             } catch (RuntimeException error) {
                 LOGGER.error("operation=execute errorType={} error={}",
                         error.getClass().getSimpleName(), StorageEngine.clean(error.getMessage()));
@@ -97,25 +98,59 @@ public final class Engine {
     }
 
     /**
-     * Resolves command-line arguments to a SQL script, or {@code null} when they are invalid.
+     * Parsed front-door arguments.
+     *
+     * @param mode the join-order mode
+     * @param sql the SQL script to run
+     */
+    private record Invocation(JoinMode mode, String sql) { }
+
+    /**
+     * Resolves command-line arguments, or {@code null} when they are invalid.
      *
      * @param args the command-line arguments
-     * @return the SQL script text, or {@code null} when usage should be printed to stderr
-     * @throws IllegalArgumentException if {@code -f} names a file that cannot be read
+     * @return the join mode and SQL script, or {@code null} when usage should be printed to stderr
+     * @throws IllegalArgumentException if {@code -f} names a file that cannot be read, or {@code -j}
+     *                                  is not {@code optimized} or {@code syntax}
+     * @since 0.4
+     * @version 0.11
      */
-    private static String script(String[] args) {
-        if (args.length == 1 && !args[0].startsWith("-")) {
-            String sql = args[0].trim();
-            return sql.endsWith(";") ? sql : sql + ";";
+    private static Invocation invocation(String[] args) {
+        JoinMode mode = JoinMode.OPTIMIZED;
+        String sql = null;
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+            if ("-j".equals(arg)) {
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException("Join mode must be optimized or syntax");
+                }
+                mode = JoinMode.parse(args[++i]);
+            } else if ("-c".equals(arg)) {
+                if (sql != null || i + 1 >= args.length) {
+                    return null;
+                }
+                sql = args[++i].trim();
+                if (!sql.endsWith(";")) {
+                    sql += ";";
+                }
+            } else if ("-f".equals(arg)) {
+                if (sql != null || i + 1 >= args.length) {
+                    return null;
+                }
+                sql = readScript(args[++i]);
+            } else if (!arg.startsWith("-") && sql == null) {
+                sql = arg.trim();
+                if (!sql.endsWith(";")) {
+                    sql += ";";
+                }
+            } else {
+                return null;
+            }
         }
-        if (args.length == 2 && "-c".equals(args[0])) {
-            String sql = args[1].trim();
-            return sql.endsWith(";") ? sql : sql + ";";
+        if (sql == null) {
+            return null;
         }
-        if (args.length == 2 && "-f".equals(args[0])) {
-            return readScript(args[1]);
-        }
-        return null;
+        return new Invocation(mode, sql);
     }
 
     /**
@@ -167,6 +202,9 @@ public final class Engine {
 
                   ./engine -f script.sql
                       Execute every statement in a UTF-8 SQL script.
+
+                  ./engine -j syntax -c "SELECT * FROM orders, customers WHERE o_custname = c_name"
+                      Keep FROM-list join order (week 10). -j optimized is the default.
 
                 The data directory is data/ under the working directory.
                 SELECT rows are printed as headerless CSV on stdout.

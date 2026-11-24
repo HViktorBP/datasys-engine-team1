@@ -1,6 +1,8 @@
 package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -66,6 +68,51 @@ class JoinTestbedIT {
                 """);
     }
 
+    @Test
+    void optimizedAndSyntaxReturnTheSameRowsWithDifferentJoinOrder() throws Exception {
+        for (var file : List.of("setup.sql", "orders.csv", "products.csv", "customers.csv", "cities.csv")) {
+            Files.copy(Path.of("src/test/resources/joins", file), dir.resolve(file));
+        }
+        assertEquals("", launch("setup.sql"));
+        for (String sql : List.of(
+                """
+                SELECT * FROM orders, customers, products
+                WHERE o_custname = c_name AND o_prodname = p_name;""",
+                """
+                SELECT * FROM orders, customers, products, cities
+                WHERE o_custname = c_name AND o_prodname = p_name AND c_city = ct_city;""")) {
+            Files.writeString(dir.resolve("query.sql"), sql + "\n");
+            Path log = dir.resolve("logs/engine.log");
+            int beforeSyntax = Files.exists(log) ? Files.readAllLines(log).size() : 0;
+            String syntax = launch("query.sql", "-j", "syntax");
+            var syntaxOrder = joinOrders(log, beforeSyntax);
+            int beforeOptimized = Files.readAllLines(log).size();
+            String optimized = launch("query.sql", "-j", "optimized");
+            var optimizedOrder = joinOrders(log, beforeOptimized);
+            var syntaxRows = new ArrayList<>(syntax.lines().toList());
+            var optimizedRows = new ArrayList<>(optimized.lines().toList());
+            syntaxRows.sort(null);
+            optimizedRows.sort(null);
+            assertEquals(syntaxRows, optimizedRows, sql);
+            assertEquals(1, syntaxOrder.size(), sql);
+            assertEquals(1, optimizedOrder.size(), sql);
+            assertNotEquals(syntaxOrder.getFirst(), optimizedOrder.getFirst(), sql);
+            assertTrue(syntaxOrder.getFirst().contains("mode=syntax"), syntaxOrder.getFirst());
+            assertTrue(optimizedOrder.getFirst().contains("mode=optimized"), optimizedOrder.getFirst());
+            var joinLines = Files.readAllLines(log).subList(beforeOptimized, Files.readAllLines(log).size())
+                    .stream()
+                    .map(line -> line.split(",", -1))
+                    .filter(fields -> fields.length == 7 && fields[5].equals("HashJoinOperator"))
+                    .map(fields -> fields[6])
+                    .toList();
+            assertFalse(joinLines.isEmpty(), sql);
+            for (String line : joinLines) {
+                assertTrue(line.contains("estRows="), line);
+                assertTrue(line.contains("rowsOut="), line);
+            }
+        }
+    }
+
     private void assertQuery(String sql, String expectedSorted) throws Exception {
         Files.writeString(dir.resolve("query.sql"), sql + "\n");
         var rows = new ArrayList<>(launch("query.sql").lines().toList());
@@ -73,8 +120,24 @@ class JoinTestbedIT {
         assertEquals(expectedSorted, String.join("\n", rows) + "\n", sql);
     }
 
-    private String launch(String script) throws Exception {
-        var builder = new ProcessBuilder(Path.of("engine").toAbsolutePath().toString(), "-f", script)
+    private List<String> joinOrders(Path log, int skip) throws Exception {
+        if (!Files.exists(log)) {
+            return List.of();
+        }
+        return Files.readAllLines(log).stream().skip(skip)
+                .map(line -> line.split(",", -1))
+                .filter(fields -> fields.length == 7 && fields[6].startsWith("joinOrder="))
+                .map(fields -> fields[6])
+                .toList();
+    }
+
+    private String launch(String script, String... flags) throws Exception {
+        var command = new ArrayList<String>();
+        command.add(Path.of("engine").toAbsolutePath().toString());
+        command.addAll(List.of(flags));
+        command.add("-f");
+        command.add(script);
+        var builder = new ProcessBuilder(command)
                 .directory(dir.toFile())
                 .redirectOutput(dir.resolve("stdout.txt").toFile())
                 .redirectError(dir.resolve("stderr.txt").toFile());
