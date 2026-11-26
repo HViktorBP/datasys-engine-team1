@@ -96,7 +96,7 @@ class JoinTestbedIT {
             assertEquals(syntaxRows, optimizedRows, sql);
             assertEquals(1, syntaxOrder.size(), sql);
             assertEquals(1, optimizedOrder.size(), sql);
-            assertNotEquals(syntaxOrder.getFirst(), optimizedOrder.getFirst(), sql);
+            assertNotEquals(syntaxOrder.getFirst().split(" ")[0], optimizedOrder.getFirst().split(" ")[0], sql);
             assertTrue(syntaxOrder.getFirst().contains("mode=syntax"), syntaxOrder.getFirst());
             assertTrue(optimizedOrder.getFirst().contains("mode=optimized"), optimizedOrder.getFirst());
             var joinLines = Files.readAllLines(log).subList(beforeOptimized, Files.readAllLines(log).size())
