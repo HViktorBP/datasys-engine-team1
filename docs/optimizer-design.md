@@ -27,8 +27,9 @@ Missing NDV means "not collected". The estimator substitutes `1` before
 merging, which overestimates joins rather than pretending the column is unique.
 
 New `COPY` and rewriting `DELETE` write NDV. Old partitions keep `ndv` absent
-until rewritten. Format stays 2, so v0.10 can ignore the extra field and v0.11
-can read catalogs that lack it. No rewrite on open.
+until rewritten. Format stays 2, and a v0.10.1 patch version was created that can
+ignore unknown attributes, meaning catalogs written by v0.11 can be read by v0.10.1.
+v0.11 can also read tables without it. No rewrite on open.
 
 ## The estimator
 
