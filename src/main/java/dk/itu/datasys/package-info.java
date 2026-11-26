@@ -3,8 +3,9 @@
  * Team 1 query engine.
  *
  * <p>SQL text is parsed, bound, planned, and executed. {@code SELECT} runs on a
- * {@link ScanOperator scan} and optional {@link FilterOperator
- * filter}. Persistent operations are exposed through {@link StorageEngine}.
+ * Volcano pipeline of scans, filters and hash joins. The planner can reorder
+ * joins using catalog NDV statistics. Persistent operations are exposed through
+ * {@link StorageEngine}.
  *
  * @since 0.1
  */

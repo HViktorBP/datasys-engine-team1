@@ -468,6 +468,8 @@ public final class StorageEngine {
             PartitionStatistics statistics = PartitionStatistics.compute(spec.type(), values);
             LOGGER.debug("table={} partition={} column={} min={} max={}", clean(table.name()), partitionIndex,
                     clean(spec.name()), clean(statistics.min()), clean(statistics.max()));
+            LOGGER.debug("table={} partition={} column={} rows={} ndv={}", clean(table.name()), partitionIndex,
+                    clean(spec.name()), rows.size(), statistics.ndv());
             chunks.add(new Chunk(offset, length, statistics));
             offset += length;
         }

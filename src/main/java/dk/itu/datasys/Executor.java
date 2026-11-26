@@ -21,7 +21,7 @@ import org.slf4j.MDC;
  * of each {@code FROM} entry, separated by {@code ;}.
  *
  * @author Team 1
- * @version 0.10
+ * @version 0.11
  * @since 0.4
  */
 public final class Executor {
@@ -35,20 +35,35 @@ public final class Executor {
     private final Planner planner;
 
     /**
-     * Creates an executor over the supplied storage engine.
+     * Creates an executor that reorders joins by estimated intermediate size.
      *
      * @param engine the storage engine
      * @throws IllegalArgumentException if {@code engine} is {@code null}
      * @since 0.4
-     * @version 0.7
+     * @version 0.11
      */
     public Executor(StorageEngine engine) {
+        this(engine, JoinMode.OPTIMIZED);
+    }
+
+    /**
+     * Creates an executor with an explicit join-order mode.
+     *
+     * @param engine the storage engine
+     * @param mode {@link JoinMode#OPTIMIZED} or {@link JoinMode#SYNTAX}
+     * @throws IllegalArgumentException if {@code engine} or {@code mode} is {@code null}
+     * @since 0.11
+     */
+    public Executor(StorageEngine engine, JoinMode mode) {
         if (engine == null) {
             throw new IllegalArgumentException("engine is required");
         }
+        if (mode == null) {
+            throw new IllegalArgumentException("join mode is required");
+        }
         this.engine = engine;
         this.binder = new Binder(engine);
-        this.planner = new Planner(engine);
+        this.planner = new Planner(engine, mode);
     }
 
     /**

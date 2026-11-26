@@ -123,6 +123,8 @@ class StorageEngineIT {
             var chunks = partition.get("chunks");
             assertEquals(ranges[p][0], chunks.get(1).get("statistics").get("min").asText());
             assertEquals(ranges[p][1], chunks.get(1).get("statistics").get("max").asText());
+            assertTrue(chunks.get(1).get("statistics").has("ndv"));
+            assertTrue(chunks.get(1).get("statistics").get("ndv").asLong() >= 1);
             for (var chunk : chunks) {
                 assertEquals(end, chunk.get("offset").asLong());
                 end += chunk.get("length").asLong();
@@ -231,9 +233,10 @@ class StorageEngineIT {
         select(e, table,"city",Comparison.EQUALS,"a,b\nc\rd");
         assertThrows(IllegalArgumentException.class, () -> e.createTable(table,schema));
         var lines = Files.readAllLines(Path.of("logs/engine.log")).stream().filter(line -> line.contains(marker)).toList();
-        assertEquals(19, lines.size()); // 12 statistics + 4 decisions + 3 storage summaries
+        assertEquals(32, lines.size()); // 12 min/max + 12 ndv + 4 decisions + 3 storage summaries + joinOrder
         for (String line : lines) assertEquals(7,line.split(",",-1).length,line);
         assertEquals(12,lines.stream().filter(line -> line.contains(" min=") && !line.contains("decision=")).count());
+        assertEquals(12,lines.stream().filter(line -> line.contains(" ndv=")).count());
         assertEquals(4,lines.stream().filter(line -> line.contains("decision=")).count());
         assertEquals(3,lines.stream().filter(line -> line.contains("operation=")).count());
     }

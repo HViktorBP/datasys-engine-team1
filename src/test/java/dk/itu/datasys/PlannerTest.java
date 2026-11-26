@@ -38,7 +38,8 @@ class PlannerTest {
             assertEquals(List.of(new ScanStats(4, 4, 0)), plan.stats());
             var records = Files.readAllLines(Path.of("logs/engine.log")).stream()
                     .map(line -> line.split(",", -1))
-                    .filter(fields -> fields[1].equals(session)).toList();
+                    .filter(fields -> fields.length == 7 && fields[1].equals(session)
+                            && fields[6].contains("decision=")).toList();
             assertEquals(4, records.size());
             for (int index = 0; index < records.size(); index++) {
                 var fields = records.get(index);
@@ -67,7 +68,9 @@ class PlannerTest {
             var plan = new Planner(engine).plan(TestStatements.select("empty", Optional.empty()));
             assertEquals(List.of(new ScanStats(0, 0, 0)), plan.stats());
             assertTrue(Files.readAllLines(Path.of("logs/engine.log")).stream()
-                    .noneMatch(line -> line.split(",", -1)[1].equals(session)));
+                    .map(line -> line.split(",", -1))
+                    .noneMatch(fields -> fields.length == 7 && fields[1].equals(session)
+                            && fields[6].contains("decision=")));
         } finally {
             if (previous == null) MDC.clear();
             else MDC.setContextMap(previous);
@@ -133,11 +136,12 @@ class PlannerTest {
         var previous = MDC.getCopyOfContextMap();
         try {
             MDC.put("sessionId", session);
-            var plan = new Planner(engine).plan(statement);
+            var plan = new Planner(engine, JoinMode.SYNTAX).plan(statement);
             var rows = HashJoinOperatorTest.drain(plan.root());
             var joinLogs = Files.readAllLines(Path.of("logs/engine.log")).stream()
                     .map(line -> line.split(",", -1))
-                    .filter(fields -> fields[1].equals(session) && fields[5].equals("HashJoinOperator"))
+                    .filter(fields -> fields.length == 7 && fields[1].equals(session)
+                            && fields[5].equals("HashJoinOperator"))
                     .map(fields -> fields[6])
                     .toList();
             return new Run(plan, rows, joinLogs);
@@ -154,9 +158,9 @@ class PlannerTest {
                 WHERE o_custname = c_name AND o_prodname = p_name AND c_city = ct_city;""");
         assertInstanceOf(HashJoinOperator.class, run.plan().root());
         assertEquals(List.of(
-                "tables=orders;customers rowsBuild=4 keys=3 rowsProbe=3 rowsOut=4",
-                "tables=orders;customers;products rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4",
-                "tables=orders;customers;products;cities rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4"),
+                "join=1 tables=orders;customers estRows=4 rowsBuild=4 keys=3 rowsProbe=3 rowsOut=4",
+                "join=2 tables=orders;customers;products estRows=4 rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4",
+                "join=3 tables=orders;customers;products;cities estRows=4 rowsBuild=4 keys=2 rowsProbe=2 rowsOut=4"),
                 run.joinLogs());
         assertArrayEquals(new Object[]{100L, "Anna", "Bike", 1L, "Anna", "Copenhagen",
                         "Bike", 2999.0, "Copenhagen", "Denmark", 1400000L},
@@ -172,8 +176,8 @@ class PlannerTest {
         assertEquals(List.of(new ScanStats(4, 4, 0), new ScanStats(3, 2, 1), new ScanStats(2, 2, 0)),
                 run.plan().stats());
         assertEquals(List.of(
-                "tables=orders;customers rowsBuild=4 keys=3 rowsProbe=2 rowsOut=3",
-                "tables=orders;customers;products rowsBuild=3 keys=2 rowsProbe=2 rowsOut=3"),
+                "join=1 tables=orders;customers estRows=8 rowsBuild=4 keys=3 rowsProbe=2 rowsOut=3",
+                "join=2 tables=orders;customers;products estRows=16 rowsBuild=3 keys=2 rowsProbe=2 rowsOut=3"),
                 run.joinLogs());
         assertEquals(3, run.rows().size());
     }
@@ -186,7 +190,8 @@ class PlannerTest {
         var run = run(engine, "SELECT * FROM customers c1, customers c2 "
                 + "WHERE c1.c_city = c2.c_city AND c2.c_name = c1.c_name;");
         assertInstanceOf(ColumnEqualityFilterOperator.class, run.plan().root());
-        assertEquals(List.of("tables=c1;c2 rowsBuild=3 keys=2 rowsProbe=3 rowsOut=5"), run.joinLogs());
+        assertEquals(List.of("join=1 tables=c1;c2 estRows=4 rowsBuild=3 keys=2 rowsProbe=3 rowsOut=5"),
+                run.joinLogs());
         assertEquals(3, run.rows().size());
         for (var row : run.rows()) {
             assertEquals(row[0], row[2]);
@@ -199,7 +204,8 @@ class PlannerTest {
         var statement = (SelectStatement) new SqlParser().parse("""
                 SELECT * FROM orders, cities, customers
                 WHERE o_custname = c_name AND c_city = ct_city;""").getFirst();
-        var error = assertThrows(IllegalArgumentException.class, () -> new Planner(engine).plan(statement));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> new Planner(engine, JoinMode.SYNTAX).plan(statement));
         assertEquals("No join predicate connects cities to the tables before it; reorder the FROM list",
                 error.getMessage());
     }
@@ -216,6 +222,65 @@ class PlannerTest {
             root.close();
         }
         return distances;
+    }
+
+    @Test
+    void optimizedStartsWithTheCheapestJoinAndKeepsSelectStarColumnOrder() throws Exception {
+        var engine = testbed(1000);
+        var statement = (SelectStatement) new SqlParser().parse("""
+                SELECT * FROM orders, customers, products, cities
+                WHERE o_custname = c_name AND o_prodname = p_name AND c_city = ct_city;""").getFirst();
+        String session = UUID.randomUUID().toString();
+        var previous = MDC.getCopyOfContextMap();
+        try {
+            MDC.put("sessionId", session);
+            var plan = new Planner(engine).plan(statement);
+            assertEquals(List.of("cities", "customers", "orders", "products"), plan.joinOrder());
+            assertEquals(JoinMode.OPTIMIZED, plan.mode());
+            var rows = HashJoinOperatorTest.drain(plan.root());
+            assertEquals(4, rows.size());
+            var anna = rows.stream().filter(row -> row[0].equals(100L)).findFirst().orElseThrow();
+            assertArrayEquals(new Object[]{100L, "Anna", "Bike", 1L, "Anna", "Copenhagen",
+                            "Bike", 2999.0, "Copenhagen", "Denmark", 1400000L},
+                    anna);
+            var joinLogs = Files.readAllLines(Path.of("logs/engine.log")).stream()
+                    .map(line -> line.split(",", -1))
+                    .filter(fields -> fields.length == 7 && fields[1].equals(session)
+                            && fields[5].equals("HashJoinOperator"))
+                    .map(fields -> fields[6])
+                    .toList();
+            assertEquals("join=1 tables=cities;customers estRows=3 rowsBuild=2 keys=2 rowsProbe=3 rowsOut=3",
+                    joinLogs.getFirst());
+            assertTrue(joinLogs.getLast().startsWith("join=3 tables=cities;customers;orders;products"));
+            assertTrue(joinLogs.getLast().contains("rowsBuild=2"));
+        } finally {
+            if (previous == null) MDC.clear();
+            else MDC.setContextMap(previous);
+        }
+    }
+
+    @Test
+    void optimizedAcceptsAFromListThatSyntaxRejects() {
+        var engine = testbed(1000);
+        var statement = (SelectStatement) new SqlParser().parse("""
+                SELECT * FROM orders, cities, customers
+                WHERE o_custname = c_name AND c_city = ct_city;""").getFirst();
+        var plan = new Planner(engine).plan(statement);
+        assertEquals(List.of("cities", "customers", "orders"), plan.joinOrder());
+        assertEquals(4, HashJoinOperatorTest.drain(plan.root()).size());
+    }
+
+    @Test
+    void optimizedBuildsTheSmallerTable() throws Exception {
+        var engine = testbed(1000);
+        var statement = (SelectStatement) new SqlParser().parse(
+                "SELECT * FROM orders, products WHERE o_prodname = p_name;").getFirst();
+        var plan = new Planner(engine).plan(statement);
+        assertEquals(List.of("products", "orders"), plan.joinOrder());
+        var rows = HashJoinOperatorTest.drain(plan.root());
+        assertArrayEquals(new Object[]{100L, "Anna", "Bike", 1L, "Bike", 2999.0},
+                rows.stream().filter(row -> row[0].equals(100L)).findFirst().orElseThrow());
+        assertEquals(4, rows.size());
     }
 
     @Test

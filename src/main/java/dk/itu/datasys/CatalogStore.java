@@ -33,9 +33,9 @@ final class CatalogStore {
      *
      * @param offset the absolute starting byte offset
      * @param length the encoded byte length
-     * @param statistics the canonical typed minimum and maximum text
+     * @param statistics the canonical typed minimum, maximum and optional NDV
      * @since 0.2
-     * @version 0.7
+     * @version 0.11
      */
     record Chunk(long offset, long length, PartitionStatistics statistics) { }
 
@@ -366,6 +366,10 @@ final class CatalogStore {
                     Object min = type.parse(chunk.statistics().min());
                     Object max = type.parse(chunk.statistics().max());
                     if (type.compare(min, max) > 0) throw new IllegalArgumentException("Invalid statistics range");
+                    Long ndv = chunk.statistics().ndv();
+                    if (ndv != null && (ndv < 1 || ndv > partition.rowCount())) {
+                        throw new IllegalArgumentException("Invalid partition NDV");
+                    }
                 }
             }
             ends.put(file.path(), end);

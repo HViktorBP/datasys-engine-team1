@@ -1,6 +1,9 @@
 package dk.itu.datasys;
 
 import static org.junit.jupiter.api.Assertions.*;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.*;
 import java.nio.file.Path;
 import java.util.List;
@@ -52,9 +55,30 @@ class StorageHelpersTest {
     }
 
     @Test void computesTypedStatistics() {
-        assertEquals(new PartitionStatistics("-9", "3"), PartitionStatistics.compute(ColumnType.LONG, List.of(-9L, 3L, -2L)));
-        assertEquals(new PartitionStatistics("-2.5", "-2.5"), PartitionStatistics.compute(ColumnType.DOUBLE, List.of(-2.5)));
-        assertEquals(new PartitionStatistics("A", "z"), PartitionStatistics.compute(ColumnType.STRING, List.of("z", "A", "a")));
+        assertEquals(new PartitionStatistics("-9", "3", 3L),
+                PartitionStatistics.compute(ColumnType.LONG, List.of(-9L, 3L, -2L)));
+        assertEquals(new PartitionStatistics("-2.5", "-2.5", 1L),
+                PartitionStatistics.compute(ColumnType.DOUBLE, List.of(-2.5)));
+        assertEquals(new PartitionStatistics("A", "z", 3L),
+                PartitionStatistics.compute(ColumnType.STRING, List.of("z", "A", "a")));
+    }
+
+    @Test void countsExactDistinctValuesIncludingDuplicatesAndSignedZero() {
+        assertEquals(2L, PartitionStatistics.compute(ColumnType.LONG, List.of(1L, 1L, 2L, 1L)).ndv());
+        assertEquals(1L, PartitionStatistics.compute(ColumnType.DOUBLE, List.of(-0.0, 0.0)).ndv());
+        assertEquals(2L, PartitionStatistics.compute(ColumnType.STRING, List.of("Anna", "Bob", "Anna")).ndv());
+    }
+
+    @Test void catalogJsonWithoutNdvDeserializesAsAbsent() throws Exception {
+        var mapper = new ObjectMapper()
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+                .enable(DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
+        var old = mapper.readValue("{\"min\":\"1\",\"max\":\"3\"}", PartitionStatistics.class);
+        assertEquals(new PartitionStatistics("1", "3"), old);
+        assertEquals(null, old.ndv());
+        var fresh = mapper.readValue("{\"min\":\"1\",\"max\":\"3\",\"ndv\":2}", PartitionStatistics.class);
+        assertEquals(2L, fresh.ndv());
     }
 
     @Test void prunesOnlyImpossibleRangesAtStrictBoundaries() {
